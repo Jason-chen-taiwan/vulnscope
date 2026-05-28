@@ -4,9 +4,25 @@ import { HeaderSearch } from "@/components/HeaderSearch";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CVE Hub — package-centric vulnerability lookup",
+  title: {
+    default: "CVE Hub — package-centric vulnerability lookup",
+    template: "%s · CVE Hub",
+  },
   description:
-    "Search CVEs by package and version across npm and PyPI. Sources: OSV.dev + CISA KEV.",
+    "Self-hosted CVE search across 14 ecosystems. Package-centric: paste a version, see what's exploitable. Powered by OSV.dev, CISA KEV, and EPSS.",
+  applicationName: "CVE Hub",
+  openGraph: {
+    type: "website",
+    siteName: "CVE Hub",
+    title: "CVE Hub — package-centric vulnerability lookup",
+    description:
+      "Self-hosted CVE search across 14 ecosystems. Package-centric: paste a version, see what's exploitable.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "CVE Hub",
+    description: "Package-centric CVE lookup across 14 ecosystems",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
