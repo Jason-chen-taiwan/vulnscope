@@ -9,3 +9,4 @@ dist/
 *.log
 *.tsbuildinfo
 .DS_Store
+.claude/
