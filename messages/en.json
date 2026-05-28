@@ -40,6 +40,7 @@
     "freshnessLine": "Data refreshed: oldest source {age}",
     "freshnessFailing": "{n, plural, =1 {1 source failing} other {# sources failing}}",
     "freshnessNone": "⏳ No data yet — the scheduler runs its first ingest ~10 seconds after server start. See {link}.",
+    "ingestInFlight": "⏳ ingest in progress — this page auto-updates",
     "viewSyncJobs": "view sync jobs"
   },
   "Search": {

@@ -40,6 +40,7 @@
     "freshnessLine": "資料更新時間:最舊來源 {age}",
     "freshnessFailing": "{n} 個來源失敗",
     "freshnessNone": "⏳ 還沒有資料 — 排程器會在伺服器啟動約 10 秒後開始第一次更新。詳見 {link}。",
+    "ingestInFlight": "⏳ 資料正在更新中 — 本頁會自動刷新",
     "viewSyncJobs": "查看同步紀錄"
   },
   "Search": {

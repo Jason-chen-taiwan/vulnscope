@@ -93,6 +93,15 @@ export async function getLastSuccessfulRun(source: string): Promise<Date | null>
   return rows[0]?.finished_at ?? null;
 }
 
+/** True if any ingest is currently in flight (status='running'). Useful
+ *  for pages that want to auto-refresh while data is moving. */
+export async function isIngestRunning(): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM sync_jobs WHERE status='running' LIMIT 1`,
+  );
+  return rows.length > 0;
+}
+
 export async function getFreshness(): Promise<{
   source: string;
   finished_at: Date | null;

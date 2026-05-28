@@ -1,8 +1,9 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { getDashboardStats, getRecentKev, getRecentVulns, getTopPackages } from "@/lib/queries";
-import { getFreshness } from "@/lib/sync-jobs";
+import { getFreshness, isIngestRunning } from "@/lib/sync-jobs";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
+import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -12,11 +13,12 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations({ locale, namespace: "Home" });
-  const [stats, kev, recent, freshness, ...top] = await Promise.all([
+  const [stats, kev, recent, freshness, ingestRunning, ...top] = await Promise.all([
     getDashboardStats(),
     getRecentKev(8),
     getRecentVulns(15),
     getFreshness(),
+    isIngestRunning(),
     ...FEATURED_ECOSYSTEMS.map((eco) => getTopPackages(eco, 8)),
   ]);
   const topByEco: Record<string, Awaited<ReturnType<typeof getTopPackages>>> = {};
@@ -31,10 +33,15 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
 
   return (
     <div className="space-y-8">
+      {/* Live-update the homepage while ingest is in flight, so the
+          "most-vulnerable packages" cards fill in as new ecosystems
+          finish without manual reload. 15-second cadence is enough —
+          ingest writes happen in bursts, not in milliseconds. */}
+      <AutoRefresh enabled={ingestRunning} intervalMs={15_000} />
       <section>
         <h1 className="text-2xl font-bold tracking-tight mb-2">VulnScope</h1>
         <p className="text-[hsl(var(--muted-foreground))]">{t("tagline")}</p>
-        <FreshnessLine oldestAgeH={oldestAgeH} freshness={freshness} t={t} />
+        <FreshnessLine oldestAgeH={oldestAgeH} freshness={freshness} ingestRunning={ingestRunning} t={t} />
       </section>
 
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -127,10 +134,12 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
 function FreshnessLine({
   oldestAgeH,
   freshness,
+  ingestRunning,
   t,
 }: {
   oldestAgeH: number;
   freshness: { source: string; finished_at: Date | null; status: string }[];
+  ingestRunning: boolean;
   t: Awaited<ReturnType<typeof getTranslations<"Home">>>;
 }) {
   if (freshness.length === 0) {
@@ -155,6 +164,9 @@ function FreshnessLine({
     <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
       <span className={color}>● </span>
       {t("freshnessLine", { age: ageLabel })}
+      {ingestRunning && (
+        <span className="ml-2 text-yellow-600 animate-pulse">· {t("ingestInFlight")}</span>
+      )}
       {failed > 0 && <span className="text-red-600 ml-2">· {t("freshnessFailing", { n: failed })}</span>}
       <Link href="/admin/jobs" className="ml-3 underline">{t("viewSyncJobs")}</Link>
     </p>
