@@ -31,10 +31,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="border-b border-[hsl(var(--border))]">
           <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-6">
-            <Link href="/" className="font-semibold text-lg no-underline">
+            <Link href="/" className="font-semibold text-lg no-underline" title="Home">
               Vuln<span className="text-red-600">·</span>Scope
             </Link>
             <HeaderSearch />
+            <Link href="/" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">Home</Link>
             <Link href="/packages" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">Packages</Link>
             <Link href="/search?kev=true" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">KEV</Link>
             <Link href="/search?severity=CRITICAL" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">Critical</Link>

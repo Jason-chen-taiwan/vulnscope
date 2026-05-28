@@ -1,5 +1,4 @@
 import type { NextConfig } from "next";
-import type { Configuration } from "webpack";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: __dirname,
@@ -7,10 +6,13 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: { bodySizeLimit: "2mb" },
   },
-  webpack: (config: Configuration, { isServer }) => {
-    // pg's native binding is optional; webpack tries to resolve it eagerly
-    // and warns even when we never use it. Externalize on the server,
-    // ignore on the (impossible) client edge case.
+  // pg's native binding is optional; webpack tries to resolve it eagerly
+  // and warns even when we never use it. Externalize it explicitly so the
+  // server bundle skips the attempted resolution. The webpack type isn't
+  // a direct dependency of this project so we use `any` rather than
+  // pulling @types/webpack in just for one parameter.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  webpack: (config: any, { isServer }: { isServer: boolean }) => {
     if (isServer) {
       const existing = Array.isArray(config.externals) ? config.externals : [];
       config.externals = [...existing, "pg-native"];
