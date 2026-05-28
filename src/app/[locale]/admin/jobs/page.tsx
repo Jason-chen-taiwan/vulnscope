@@ -1,5 +1,6 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { getRecentSyncJobs } from "@/lib/sync-jobs";
+import { JobsAutoReload } from "./auto-reload";
 
 function TriggerHint({ t }: { t: (key: string, values?: Record<string, string>) => string }) {
   const txt = t("triggerHint", { token: "__TOKEN__" });
@@ -39,11 +40,14 @@ export default async function JobsPage({
   const anyRunning = jobs.some((j) => j.status === "running");
   return (
     <div className="space-y-4">
-      {/* Auto-refresh every 5s while anything is running so live progress
-          shows up without manual reload. We only opt-in to refresh when
-          the table actually has motion to display, to avoid jitter for
-          read-only viewers. */}
-      {anyRunning && <meta httpEquiv="refresh" content="5" />}
+      {/* Live updates while anything is running. We can't use
+          <meta http-equiv="refresh"> because Next.js client navigation
+          carries the tag across route changes — users get yanked back to
+          this page when they try to navigate elsewhere. Use a tiny inline
+          script that only reloads while we're still on /admin/jobs, and
+          stops the moment the user navigates away (pagehide / SPA route
+          change both clear the timer). */}
+      {anyRunning && <JobsAutoReload />}
       <header>
         <h1 className="text-2xl font-bold tracking-tight">{t("title")}</h1>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("subtitle")}</p>
