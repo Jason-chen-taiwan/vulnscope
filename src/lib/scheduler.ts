@@ -36,24 +36,39 @@ declare global {
  * Whether the scheduled tick should skip this round.
  * Only used by the automatic timer; manual /api/v1/admin/refresh always runs.
  *
- * Skip criteria: a "refresh" sentinel row marked success less than
- * half the refresh interval ago. We write that row after every full
- * orchestrator run completes (regardless of which sources individually
- * failed) so the dedupe is a single, cheap query.
+ * Two skip conditions:
+ *   1. Another 'refresh' row is currently `running` and was started
+ *      within the last 2 hours. Catches the "fly machine restarted
+ *      mid-ingest and now both the new and old refresh are racing"
+ *      case (the original cause of multiple refresh rows piling up).
+ *   2. A 'refresh' marked `success` within the half-interval window.
+ *      The normal "we just refreshed, don't run again so soon" path.
  */
 async function shouldSkipScheduled(): Promise<string | null> {
   if (globalThis.__vulnscope_refresh_in_flight) return "previous refresh still in flight";
   try {
     const pool = await getPool();
+
+    // (1) A live in-flight refresh — even from a previous process. Anything
+    // older than 2 hours is treated as dead (matches reaper threshold below).
+    const live = await pool.query(
+      `SELECT 1 FROM sync_jobs
+        WHERE source = 'refresh' AND status = 'running'
+          AND started_at > now() - interval '2 hours'
+        LIMIT 1`,
+    );
+    if (live.rows.length > 0) return "another refresh is already in flight";
+
+    // (2) Recently finished refresh.
     const halfWindow = Math.floor(REFRESH_INTERVAL_MS / 2 / 1000);
-    const { rows } = await pool.query(
+    const recent = await pool.query(
       `SELECT 1 FROM sync_jobs
         WHERE source = 'refresh' AND status = 'success'
           AND finished_at > now() - ($1 || ' seconds')::interval
         LIMIT 1`,
       [String(halfWindow)],
     );
-    if (rows.length > 0) return `full refresh completed within last ${halfWindow}s`;
+    if (recent.rows.length > 0) return `full refresh completed within last ${halfWindow}s`;
   } catch {
     // DB issues will surface via runFullRefresh's own error handling.
   }
