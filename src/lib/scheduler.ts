@@ -61,6 +61,13 @@ async function shouldSkipScheduled(): Promise<string | null> {
 }
 
 async function reapStaleJobs() {
+  // Only reap jobs that are genuinely stuck — i.e. older than a full
+  // OSV ingest could legitimately take. The slowest single ingest in
+  // practice (OSV npm) is ~5 minutes; the orchestrator's full run is
+  // ~30 minutes. Anything still 'running' after 2 hours is dead.
+  //
+  // Earlier this was 30 minutes which mis-reaped legitimate in-flight
+  // ingests when fly secrets changes caused machine restarts.
   try {
     const pool = await getPool();
     await pool.query(
@@ -69,7 +76,7 @@ async function reapStaleJobs() {
               finished_at = now(),
               error_message = COALESCE(error_message, 'reaped: stale running job on boot')
         WHERE status = 'running'
-          AND started_at < now() - interval '30 minutes'`,
+          AND started_at < now() - interval '2 hours'`,
     );
   } catch {
     /* ignore — DB might not be ready yet */
