@@ -111,6 +111,26 @@ export const metaKv = pgTable("meta_kv", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).default(sql`now()`),
 });
 
+export const syncJobs = pgTable(
+  "sync_jobs",
+  {
+    id: serial("id").primaryKey(),
+    source: text("source").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().default(sql`now()`),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    status: text("status").notNull().default("running"),
+    recordsSeen: integer("records_seen"),
+    recordsChanged: integer("records_changed"),
+    errorMessage: text("error_message"),
+  },
+  (t) => ({
+    sourceStartedIdx: index("idx_sync_jobs_source_started").on(t.source, t.startedAt),
+    startedIdx: index("idx_sync_jobs_started").on(t.startedAt),
+  }),
+);
+
+export type SyncJob = typeof syncJobs.$inferSelect;
+
 export type Vulnerability = typeof vulnerabilities.$inferSelect;
 export type NewVulnerability = typeof vulnerabilities.$inferInsert;
 export type CvssScore = typeof cvssScores.$inferSelect;

@@ -57,6 +57,20 @@ pnpm ingest:osv --ecosystem=npm,PyPI
 pnpm ingest:epss
 ```
 
+### Data stays fresh automatically
+
+Once `pnpm dev` (or `pnpm start` in production) is running, an in-process
+scheduler runs **a full refresh every 24 hours** — pulling fresh KEV,
+OSV across all 14 ecosystems, and EPSS. The first run happens 10 seconds
+after server boot. See progress at
+[`/admin/jobs`](http://localhost:3000/admin/jobs) and the data-freshness
+indicator on the homepage.
+
+Manual trigger: `POST /api/v1/admin/refresh` (loopback-only by default;
+set `ADMIN_TOKEN` env to allow remote calls).
+
+Disable via `SCHEDULER_DISABLED=1`.
+
 ## What it does
 
 | URL | What you see |

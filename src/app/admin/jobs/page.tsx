@@ -1,0 +1,82 @@
+import { getRecentSyncJobs } from "@/lib/sync-jobs";
+
+export const dynamic = "force-dynamic";
+
+interface SyncJobRow {
+  id: number;
+  source: string;
+  started_at: Date;
+  finished_at: Date | null;
+  status: string;
+  records_seen: number | null;
+  records_changed: number | null;
+  error_message: string | null;
+}
+
+export default async function JobsPage() {
+  const jobs = (await getRecentSyncJobs(100)) as SyncJobRow[];
+  return (
+    <div className="space-y-4">
+      <header>
+        <h1 className="text-2xl font-bold tracking-tight">Sync jobs</h1>
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          Last 100 ingest runs. The scheduler refreshes all sources every 24 hours.
+        </p>
+      </header>
+      <table className="w-full text-sm">
+        <thead className="text-xs uppercase text-[hsl(var(--muted-foreground))]">
+          <tr>
+            <th className="text-left py-1 pr-3">Source</th>
+            <th className="text-left py-1 pr-3">Started</th>
+            <th className="text-left py-1 pr-3">Duration</th>
+            <th className="text-left py-1 pr-3">Status</th>
+            <th className="text-right py-1 pr-3">Seen</th>
+            <th className="text-right py-1 pr-3">Changed</th>
+            <th className="text-left py-1">Error</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono text-xs">
+          {jobs.map((j) => {
+            const duration =
+              j.finished_at && j.started_at
+                ? ((new Date(j.finished_at).getTime() - new Date(j.started_at).getTime()) / 1000).toFixed(1) + "s"
+                : "—";
+            const cls =
+              j.status === "success" ? "text-green-600" :
+              j.status === "failed" ? "text-red-600" :
+              "text-yellow-600";
+            return (
+              <tr key={j.id} className="border-t border-[hsl(var(--border))]">
+                <td className="py-1 pr-3">{j.source}</td>
+                <td className="py-1 pr-3">{new Date(j.started_at).toLocaleString()}</td>
+                <td className="py-1 pr-3">{duration}</td>
+                <td className={`py-1 pr-3 font-bold ${cls}`}>{j.status}</td>
+                <td className="py-1 pr-3 text-right">{j.records_seen ?? "—"}</td>
+                <td className="py-1 pr-3 text-right">{j.records_changed ?? "—"}</td>
+                <td className="py-1 text-red-600">{j.error_message ?? ""}</td>
+              </tr>
+            );
+          })}
+          {jobs.length === 0 && (
+            <tr>
+              <td colSpan={7} className="py-4 text-center text-[hsl(var(--muted-foreground))]">
+                No jobs yet. They'll appear here ~10s after server boot once the scheduler runs its first tick.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <form action="/api/v1/admin/refresh" method="post">
+        <button
+          type="submit"
+          className="rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium"
+        >
+          Trigger refresh now
+        </button>
+        <span className="ml-3 text-xs text-[hsl(var(--muted-foreground))]">
+          Localhost-only unless <code className="font-mono">ADMIN_TOKEN</code> env is set.
+        </span>
+      </form>
+    </div>
+  );
+}

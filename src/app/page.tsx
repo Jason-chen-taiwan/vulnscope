@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDashboardStats, getRecentKev, getRecentVulns, getTopPackages } from "@/lib/queries";
+import { getFreshness } from "@/lib/sync-jobs";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 
 export const dynamic = "force-dynamic";
@@ -7,14 +8,20 @@ export const dynamic = "force-dynamic";
 const FEATURED_ECOSYSTEMS = ["Debian", "Maven", "npm", "PyPI", "Go", "Alpine"];
 
 export default async function Home() {
-  const [stats, kev, recent, ...top] = await Promise.all([
+  const [stats, kev, recent, freshness, ...top] = await Promise.all([
     getDashboardStats(),
     getRecentKev(8),
     getRecentVulns(15),
+    getFreshness(),
     ...FEATURED_ECOSYSTEMS.map((eco) => getTopPackages(eco, 8)),
   ]);
   const topByEco: Record<string, Awaited<ReturnType<typeof getTopPackages>>> = {};
   FEATURED_ECOSYSTEMS.forEach((eco, i) => (topByEco[eco] = top[i]));
+  const oldest = freshness
+    .filter((f) => f.finished_at)
+    .map((f) => new Date(f.finished_at!).getTime())
+    .reduce((min, t) => Math.min(min, t), Date.now());
+  const oldestAgeH = (Date.now() - oldest) / 3600_000;
 
   return (
     <div className="space-y-8">
@@ -23,6 +30,7 @@ export default async function Home() {
         <p className="text-[hsl(var(--muted-foreground))]">
           Package-centric vulnerability lookup. Type a package name or CVE ID above, or click a card.
         </p>
+        <FreshnessLine oldestAgeH={oldestAgeH} freshness={freshness} />
       </section>
 
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -113,6 +121,38 @@ export default async function Home() {
         </div>
       </section>
     </div>
+  );
+}
+
+function FreshnessLine({
+  oldestAgeH,
+  freshness,
+}: {
+  oldestAgeH: number;
+  freshness: { source: string; finished_at: Date | null; status: string }[];
+}) {
+  if (freshness.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-yellow-600">
+        ⏳ No data yet — the scheduler runs its first ingest ~10 seconds after server start.
+        See <Link href="/admin/jobs" className="underline">/admin/jobs</Link>.
+      </p>
+    );
+  }
+  const ageLabel = oldestAgeH < 1
+    ? `${Math.round(oldestAgeH * 60)} min ago`
+    : oldestAgeH < 48
+    ? `${oldestAgeH.toFixed(1)}h ago`
+    : `${Math.floor(oldestAgeH / 24)}d ago`;
+  const color = oldestAgeH < 26 ? "text-green-600" : oldestAgeH < 72 ? "text-yellow-600" : "text-red-600";
+  const failed = freshness.filter((f) => f.status === "failed").length;
+  return (
+    <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
+      <span className={color}>● </span>
+      Data refreshed: oldest source {ageLabel}
+      {failed > 0 && <span className="text-red-600 ml-2">· {failed} source{failed === 1 ? "" : "s"} failing</span>}
+      <Link href="/admin/jobs" className="ml-3 underline">view sync jobs</Link>
+    </p>
   );
 }
 
