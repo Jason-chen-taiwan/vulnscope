@@ -1,54 +1,42 @@
-# Fly.io app config for the hosted demo at vulnscope.dev (or vulnscope.fly.dev).
-# Self-hosters can copy this as a starting template — replace `app` and any
-# region you prefer.
+# fly.toml app configuration file generated for vulnscope-tw on 2026-05-28T13:06:54+08:00
 #
-# Required secrets (set with `fly secrets set KEY=value`):
-#   DATABASE_URL  — postgres connection string (use `fly postgres create` or Neon)
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# Optional secrets (variants of "I run my own deployment"):
-#   ADMIN_TOKEN                — allow remote POST /api/v1/admin/refresh
-#   NEXT_PUBLIC_PLAUSIBLE_DOMAIN — privacy-friendly analytics
-#   NEXT_PUBLIC_ADS_ENABLED    — render the sidebar ad slot
-#   NEXT_PUBLIC_CARBON_SRC     — Carbon Ads serve URL once approved
-#   NEXT_PUBLIC_NEWSLETTER_URL — newsletter signup form action URL
 
-app = "vulnscope"
-primary_region = "nrt"   # Tokyo — closest to Taiwan; change as you like
+app = 'vulnscope-tw'
+primary_region = 'nrt'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  NODE_ENV = "production"
-  PORT = "3000"
+  NODE_ENV = 'production'
+  PORT = '3000'
+
+[[mounts]]
+  source = 'vulnscope_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = "stop"     # scale to zero when idle (free tier friendly)
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
   [http_service.concurrency]
-    type = "requests"
-    soft_limit = 200
+    type = 'requests'
     hard_limit = 300
+    soft_limit = 200
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "20s"
-    method = "GET"
-    path = "/api/health"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '20s'
+    method = 'GET'
+    path = '/api/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"        # Free tier: 256MB; bump to 1GB if you've added a card
-
-# Persistent volume so the in-process scheduler survives restarts.
-# Not strictly needed (everything important lives in Postgres) but useful
-# for build cache and any future file-based assets.
-[mounts]
-  source = "vulnscope_data"
-  destination = "/data"
+  size = 'shared-cpu-1x'
+  memory = '1gb'

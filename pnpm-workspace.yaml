@@ -1,15 +1,19 @@
 packages:
   - .
-allowBuilds:
-  '@parcel/watcher': set this to true or false
-  '@swc/core': set this to true or false
-  core-js-pure: set this to true or false
-  esbuild: set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+
+# Approve all transitive deps that ship native postinstall scripts.
+# pnpm 11 refuses to run unapproved postinstall scripts and exits 1 in
+# strict environments (like Docker build). Adding them here whitelists
+# them at install time without requiring an interactive `pnpm approve-builds`.
 onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - '@swc/core'
+  - core-js-pure
   - esbuild
   - sharp
   - unrs-resolver
-  - core-js-pure
+
+# Don't run a deps check before every `pnpm run`. Drizzle-kit and other
+# tools shell out to pnpm internally which would otherwise re-trigger
+# the ignored-builds error.
 verifyDepsBeforeRun: never

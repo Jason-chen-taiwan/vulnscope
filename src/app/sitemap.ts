@@ -3,6 +3,10 @@ import { pool } from "@/db/client";
 import { routing } from "@/i18n/routing";
 import { INSIGHT_ECOSYSTEMS } from "@/lib/insights";
 
+// Always render at request time — the DB isn't available at `next build`
+// (we don't ship a DB inside the Docker image).
+export const dynamic = "force-dynamic";
+
 const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
 /**
@@ -29,43 +33,47 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }
   }
 
-  // CVE pages — only those in KEV or with EPSS >= 5%. That's still the
-  // long tail of "actually interesting" CVEs without blowing the cap.
-  const { rows: cves } = await pool.query<{ cve_id: string; modified_at: Date | null }>(
-    `SELECT cve_id, modified_at
-       FROM vulnerabilities
-      WHERE kev = true OR epss_score >= 0.05
-      ORDER BY epss_score DESC NULLS LAST
-      LIMIT 20000`,
-  );
-  for (const r of cves) {
-    for (const locale of routing.locales) {
-      out.push({
-        url: `${SITE}/${locale}/cve/${r.cve_id}`,
-        lastModified: r.modified_at ?? undefined,
-        changeFrequency: "weekly",
-        priority: 0.6,
-      });
+  // CVE + package URLs come from the DB. If the DB isn't reachable
+  // (e.g. cold-start race), still return the static entries — a partial
+  // sitemap is better than a 500.
+  try {
+    const { rows: cves } = await pool.query<{ cve_id: string; modified_at: Date | null }>(
+      `SELECT cve_id, modified_at
+         FROM vulnerabilities
+        WHERE kev = true OR epss_score >= 0.05
+        ORDER BY epss_score DESC NULLS LAST
+        LIMIT 20000`,
+    );
+    for (const r of cves) {
+      for (const locale of routing.locales) {
+        out.push({
+          url: `${SITE}/${locale}/cve/${r.cve_id}`,
+          lastModified: r.modified_at ?? undefined,
+          changeFrequency: "weekly",
+          priority: 0.6,
+        });
+      }
     }
-  }
 
-  // Top packages by CVE count — search-worthy long-tail.
-  const { rows: pkgs } = await pool.query<{ ecosystem: string; name: string }>(
-    `SELECT p.ecosystem, p.name
-       FROM packages p
-       JOIN affected a ON a.package_id = p.id
-      GROUP BY p.ecosystem, p.name
-      ORDER BY COUNT(DISTINCT a.cve_id) DESC
-      LIMIT 5000`,
-  );
-  for (const r of pkgs) {
-    for (const locale of routing.locales) {
-      out.push({
-        url: `${SITE}/${locale}/package/${encodeURIComponent(r.ecosystem)}/${encodeURIComponent(r.name)}`,
-        changeFrequency: "weekly",
-        priority: 0.6,
-      });
+    const { rows: pkgs } = await pool.query<{ ecosystem: string; name: string }>(
+      `SELECT p.ecosystem, p.name
+         FROM packages p
+         JOIN affected a ON a.package_id = p.id
+        GROUP BY p.ecosystem, p.name
+        ORDER BY COUNT(DISTINCT a.cve_id) DESC
+        LIMIT 5000`,
+    );
+    for (const r of pkgs) {
+      for (const locale of routing.locales) {
+        out.push({
+          url: `${SITE}/${locale}/package/${encodeURIComponent(r.ecosystem)}/${encodeURIComponent(r.name)}`,
+          changeFrequency: "weekly",
+          priority: 0.6,
+        });
+      }
     }
+  } catch (e) {
+    console.warn("[sitemap] DB unavailable, returning static entries only:", (e as Error).message);
   }
   return out;
 }

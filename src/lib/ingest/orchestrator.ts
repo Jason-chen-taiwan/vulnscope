@@ -3,7 +3,7 @@ import { runKevIngest } from "./kev";
 import { runOsvIngest } from "./osv";
 import { runEpssIngest } from "./epss";
 
-export const DEFAULT_ECOSYSTEMS = [
+const ALL_ECOSYSTEMS = [
   "npm",
   "PyPI",
   "Maven",
@@ -18,6 +18,17 @@ export const DEFAULT_ECOSYSTEMS = [
   "Alpine",
   "Bitnami",
 ];
+
+/**
+ * Operators can restrict which ecosystems the scheduler refreshes via
+ * INGEST_ECOSYSTEMS env (comma-separated). Useful when the DB has size
+ * constraints (e.g. Neon free tier @ 500 MB) — limiting to npm/PyPI/Maven
+ * keeps the footprint under ~200 MB while still covering the bulk of
+ * "what package am I using" questions.
+ */
+export const DEFAULT_ECOSYSTEMS = process.env.INGEST_ECOSYSTEMS
+  ? process.env.INGEST_ECOSYSTEMS.split(",").map((s) => s.trim()).filter(Boolean)
+  : ALL_ECOSYSTEMS;
 
 export interface RefreshResult {
   startedAt: Date;

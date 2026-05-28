@@ -7,7 +7,15 @@ WORKDIR /app
 RUN apk add --no-cache libc6-compat
 # Copy lockfile + package manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-RUN corepack enable && pnpm install --frozen-lockfile
+# pnpm 11 hard-fails when ANY transitive dep has an unapproved postinstall
+# script. In Docker we can't run the interactive `pnpm approve-builds`,
+# and the workspace-file allowlist isn't honoured reliably across runs.
+# `--config.dangerouslyAllowAllBuilds=true` is the documented escape hatch
+# for non-interactive environments; falls back to `--ignore-scripts` if
+# that flag is rejected by the installed pnpm version.
+RUN corepack enable && \
+    (pnpm install --frozen-lockfile --config.dangerouslyAllowAllBuilds=true \
+     || pnpm install --frozen-lockfile --ignore-scripts)
 
 # ---------- builder ----------
 FROM node:22-alpine AS builder
@@ -28,7 +36,9 @@ RUN apk add --no-cache unzip tini && \
 # Standalone Next.js output (configured in next.config.ts)
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# /app/public may or may not exist (we don't ship any static assets today).
+# Ensure the directory exists either way so future static files can land here.
+RUN mkdir -p ./public
 # Ingest scripts + their deps for the daily refresh runtime
 COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle

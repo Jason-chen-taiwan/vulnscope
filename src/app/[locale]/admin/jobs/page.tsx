@@ -85,15 +85,24 @@ export default async function JobsPage({
           )}
         </tbody>
       </table>
-      <form action="/api/v1/admin/refresh" method="post">
-        <button
-          type="submit"
-          className="rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium"
-        >
-          {t("trigger")}
-        </button>
-        <TriggerHint t={t} />
-      </form>
+      {/* Manual trigger is only useful when an operator can actually call it.
+          Without ADMIN_TOKEN the endpoint is loopback-only, so on a hosted
+          demo the button would just 401 every random visitor — hide it. */}
+      {process.env.ADMIN_TOKEN ? (
+        <form action="/api/v1/admin/refresh" method="post">
+          <button
+            type="submit"
+            className="rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium"
+          >
+            {t("trigger")}
+          </button>
+          <TriggerHint t={t} />
+        </form>
+      ) : (
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          <TriggerHint t={t} />
+        </p>
+      )}
     </div>
   );
 }

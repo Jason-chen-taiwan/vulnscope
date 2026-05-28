@@ -21,6 +21,9 @@ export async function generateMetadata({
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "Meta" });
   return {
+    metadataBase: process.env.NEXT_PUBLIC_SITE_URL
+      ? new URL(process.env.NEXT_PUBLIC_SITE_URL)
+      : undefined,
     title: { default: t("title"), template: "%s · VulnScope" },
     description: t("description"),
     applicationName: "VulnScope",
