@@ -3,6 +3,8 @@ import { pool } from "@/db/client";
 export interface JobHandle {
   id: number;
   source: string;
+  /** Live progress update — call as records stream in. Fire-and-forget. */
+  progress: (counts: { seen?: number; changed?: number }) => void;
   finish: (result: { changed?: number; seen?: number; error?: Error | null }) => Promise<void>;
 }
 
@@ -12,10 +14,49 @@ export async function startJob(source: string): Promise<JobHandle> {
     [source],
   );
   const id = rows[0].id as number;
+
+  // Progress UPDATEs at ingest hot-path frequency would flood the DB. We
+  // coalesce them: at most one UPDATE per second, and only the latest
+  // counts get flushed.
+  let pendingSeen: number | null = null;
+  let pendingChanged: number | null = null;
+  let flushing = false;
+  let lastFlush = 0;
+  const FLUSH_INTERVAL_MS = 1000;
+
+  async function flush() {
+    if (flushing) return;
+    if (pendingSeen === null && pendingChanged === null) return;
+    flushing = true;
+    const s = pendingSeen;
+    const c = pendingChanged;
+    pendingSeen = null;
+    pendingChanged = null;
+    try {
+      await pool.query(
+        `UPDATE sync_jobs SET records_seen = COALESCE($2, records_seen),
+                              records_changed = COALESCE($3, records_changed)
+          WHERE id = $1`,
+        [id, s, c],
+      );
+      lastFlush = Date.now();
+    } catch {
+      /* progress UPDATEs are best-effort */
+    } finally {
+      flushing = false;
+    }
+  }
+
   return {
     id,
     source,
+    progress({ seen, changed }) {
+      if (seen !== undefined) pendingSeen = seen;
+      if (changed !== undefined) pendingChanged = changed;
+      if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) void flush();
+    },
     async finish({ changed, seen, error }) {
+      // Final flush of pending counts before status transition.
       await pool.query(
         `UPDATE sync_jobs
             SET finished_at = now(),

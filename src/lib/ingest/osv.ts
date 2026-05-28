@@ -188,6 +188,7 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
       };
       const limit = pLimit(6);
       const CHUNK = 200;
+      let processed = 0;
       for (let off = 0; off < files.length; off += CHUNK) {
         const slice = files.slice(off, off + CHUNK);
         await Promise.all(
@@ -200,10 +201,15 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
                 if (await processRecord(ctx, parsed.data)) imported++;
               } catch {
                 /* per-record errors swallowed; aggregate metrics go to job row */
+              } finally {
+                processed++;
               }
             }),
           ),
         );
+        // Surface live progress to the sync_jobs row. The handle coalesces
+        // these updates internally so we don't flood the DB.
+        job.progress({ seen: processed, changed: imported });
         if (ctx.pkgCache.size > 50000) ctx.pkgCache.clear();
       }
     } finally {

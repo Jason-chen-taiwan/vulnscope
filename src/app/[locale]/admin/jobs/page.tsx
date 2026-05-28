@@ -36,8 +36,14 @@ export default async function JobsPage({
   const t = await getTranslations({ locale, namespace: "Jobs" });
   const dateLocale = locale === "zh" ? "zh-TW" : "en";
   const jobs = (await getRecentSyncJobs(100)) as SyncJobRow[];
+  const anyRunning = jobs.some((j) => j.status === "running");
   return (
     <div className="space-y-4">
+      {/* Auto-refresh every 5s while anything is running so live progress
+          shows up without manual reload. We only opt-in to refresh when
+          the table actually has motion to display, to avoid jitter for
+          read-only viewers. */}
+      {anyRunning && <meta httpEquiv="refresh" content="5" />}
       <header>
         <h1 className="text-2xl font-bold tracking-tight">{t("title")}</h1>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("subtitle")}</p>
@@ -56,10 +62,14 @@ export default async function JobsPage({
         </thead>
         <tbody className="font-mono text-xs">
           {jobs.map((j) => {
+            const startMs = new Date(j.started_at).getTime();
+            const endMs = j.finished_at ? new Date(j.finished_at).getTime() : Date.now();
+            const elapsedSec = ((endMs - startMs) / 1000).toFixed(1);
+            // 'running' shows live elapsed seconds with a small ⏱ prefix so
+            // operators can tell at a glance it's still moving.
             const duration =
-              j.finished_at && j.started_at
-                ? ((new Date(j.finished_at).getTime() - new Date(j.started_at).getTime()) / 1000).toFixed(1) + "s"
-                : "—";
+              j.status === "running" ? `⏱ ${elapsedSec}s` :
+              j.finished_at ? `${elapsedSec}s` : "—";
             const cls =
               j.status === "success" ? "text-green-600" :
               j.status === "failed" ? "text-red-600" :
