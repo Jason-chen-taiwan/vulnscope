@@ -22,6 +22,6 @@ export default {
   dbCredentials: {
     url:
       process.env.DATABASE_URL ??
-      "postgres://cvehub:cvehub@127.0.0.1:55432/cvehub",
+      "postgres://vulnscope:vulnscope@127.0.0.1:55432/vulnscope",
   },
 } satisfies Config;

@@ -19,7 +19,7 @@ export default async function Home() {
   return (
     <div className="space-y-8">
       <section>
-        <h1 className="text-2xl font-bold tracking-tight mb-2">CVE Hub</h1>
+        <h1 className="text-2xl font-bold tracking-tight mb-2">VulnScope</h1>
         <p className="text-[hsl(var(--muted-foreground))]">
           Package-centric vulnerability lookup. Type a package name or CVE ID above, or click a card.
         </p>

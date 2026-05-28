@@ -24,12 +24,12 @@ export default function AppleIcon() {
           letterSpacing: -6,
         }}
       >
-        C
+        V
         <div
           style={{
             position: "absolute",
-            right: 38,
-            bottom: 50,
+            right: 32,
+            bottom: 42,
             width: 28,
             height: 28,
             borderRadius: 999,

@@ -1,4 +1,4 @@
-# Contributing to CVE Hub
+# Contributing to VulnScope
 
 Thanks for considering a contribution! This project is small and
 opinionated — please open an issue before starting non-trivial work so we

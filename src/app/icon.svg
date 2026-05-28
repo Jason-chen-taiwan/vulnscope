@@ -2,7 +2,7 @@
   <rect width="64" height="64" rx="12" fill="#0a0a0a"/>
   <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central"
         font-family="JetBrains Mono, ui-monospace, monospace"
-        font-size="38" font-weight="700" fill="#fafafa"
-        letter-spacing="-2">C</text>
-  <circle cx="46" cy="42" r="5" fill="#dc2626"/>
+        font-size="40" font-weight="700" fill="#fafafa"
+        letter-spacing="-2">V</text>
+  <circle cx="48" cy="46" r="5" fill="#dc2626"/>
 </svg>

@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "CVE Hub — package-centric vulnerability lookup";
+export const alt = "VulnScope — package-centric CVE lookup";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -38,12 +38,12 @@ export default function OpenGraphImage() {
               fontFamily: "ui-monospace, monospace",
             }}
           >
-            C
+            V
             <div
               style={{
                 position: "absolute",
-                right: 14,
-                bottom: 22,
+                right: 12,
+                bottom: 18,
                 width: 16,
                 height: 16,
                 borderRadius: 999,
@@ -52,9 +52,9 @@ export default function OpenGraphImage() {
             />
           </div>
           <div style={{ fontSize: 96, fontWeight: 700, letterSpacing: -2, display: "flex" }}>
-            CVE
+            Vuln
             <span style={{ color: "#dc2626", margin: "0 6px" }}>·</span>
-            Hub
+            Scope
           </div>
         </div>
         <div style={{ fontSize: 36, color: "#a3a3a3", maxWidth: 1000, lineHeight: 1.3 }}>

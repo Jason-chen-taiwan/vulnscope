@@ -1,4 +1,4 @@
-# CVE Hub
+# VulnScope
 
 > **Package-centric CVE lookup, self-hosted in two commands.** Type a package
 > name and a version, see which CVEs affect it and which upgrade clears them.
@@ -31,7 +31,7 @@ question and works outward.
 ## Quick start
 
 ```bash
-git clone <repo-url> cve-hub && cd cve-hub
+git clone <repo-url> vulnscope && cd vulnscope
 pnpm install
 cp .env.example .env.local
 
@@ -80,7 +80,7 @@ Deliberately. If you need any of these, look elsewhere or fork:
 - **No SBOM scanning.** [Trivy](https://github.com/aquasecurity/trivy),
   [Grype](https://github.com/anchore/grype), and
   [osv-scanner](https://github.com/google/osv-scanner) already do that
-  well — they're better suited for "scan my repo / image", while CVE Hub
+  well — they're better suited for "scan my repo / image", while VulnScope
   is better suited for "I'm reading a security advisory, tell me everything".
 - **No NVD ingest.** OSV already pulls CVE data from NVD upstream, plus
   GHSA-quality CVSS, plus ecosystem-tagged ranges. NVD's enrichment has
@@ -156,7 +156,7 @@ SaaS. PRs welcome.
       source-diff view
 - [ ] ExploitDB / Metasploit / Nuclei template mapping per CVE
 - [ ] RSS / Atom feeds (per ecosystem, per severity)
-- [ ] CLI: `cvehub check package.json` — ingest your manifest, list CVEs
+- [ ] CLI: `vulnscope check package.json` — ingest your manifest, list CVEs
 - [ ] Read replica + materialized views for `/packages` aggregation
 
 ## Acknowledgments

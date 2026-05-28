@@ -4,22 +4,22 @@
 services:
   postgres:
     image: postgres:16
-    container_name: cvehub-postgres
+    container_name: vulnscope-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: cvehub
-      POSTGRES_PASSWORD: cvehub
-      POSTGRES_DB: cvehub
+      POSTGRES_USER: vulnscope
+      POSTGRES_PASSWORD: vulnscope
+      POSTGRES_DB: vulnscope
     ports:
       - "55432:5432"
     volumes:
-      - cvehub-pgdata:/var/lib/postgresql/data
+      - vulnscope-pgdata:/var/lib/postgresql/data
       - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cvehub -d cvehub"]
+      test: ["CMD-SHELL", "pg_isready -U vulnscope -d vulnscope"]
       interval: 5s
       timeout: 3s
       retries: 10
 
 volumes:
-  cvehub-pgdata:
+  vulnscope-pgdata:

@@ -8,9 +8,9 @@ PGDATA="$ROOT/.pgdata"
 PORT=55432
 PGBIN="/opt/homebrew/opt/postgresql@16/bin"
 LOGFILE="$ROOT/.pgdata/postgres.log"
-DBNAME="cvehub"
-DBUSER="cvehub"
-DBPASS="cvehub"
+DBNAME="vulnscope"
+DBUSER="vulnscope"
+DBPASS="vulnscope"
 
 export PATH="$PGBIN:$PATH"
 

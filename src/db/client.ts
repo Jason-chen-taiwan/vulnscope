@@ -4,7 +4,7 @@ import * as schema from "./schema";
 
 const connectionString =
   process.env.DATABASE_URL ??
-  "postgres://cvehub:cvehub@127.0.0.1:55432/cvehub";
+  "postgres://vulnscope:vulnscope@127.0.0.1:55432/vulnscope";
 
 declare global {
   // eslint-disable-next-line no-var
