@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { notFound } from "next/navigation";
@@ -8,6 +9,27 @@ import { describeRange } from "@/lib/version-match";
 import { normalizePypiName } from "@/lib/osv";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ locale: string; ecosystem: string; name: string }>;
+}): Promise<Metadata> {
+  const { ecosystem: ecoRaw, name: nameRaw } = await params;
+  const ecosystem = decodeURIComponent(ecoRaw);
+  const rawName = decodeURIComponent(nameRaw);
+  const name = ecosystem === "PyPI" ? normalizePypiName(rawName) : rawName;
+  const bundle = await getPackageWithCves(ecosystem, name);
+  if (!bundle) return { title: `${ecosystem}/${name}`, robots: { index: false } };
+  const title = `${ecosystem}/${name} — ${bundle.cves.length} CVEs`;
+  const desc = `Every CVE affecting ${ecosystem}/${name}, with version ranges, EPSS scores, and CISA KEV flags.`;
+  return {
+    title,
+    description: desc,
+    openGraph: { title, description: desc, type: "article" },
+    twitter: { card: "summary_large_image", title, description: desc },
+  };
+}
 
 export default async function PackagePage({
   params,

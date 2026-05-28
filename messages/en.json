@@ -100,6 +100,34 @@
     "noMatches": "No matches.",
     "cveCount": "{n, plural, =1 {1 CVE} other {# CVEs}}"
   },
+  "Newsletter": {
+    "title": "📬 Weekly KEV Brief",
+    "blurb": "One short email per week — only the CVEs that entered CISA KEV or had a major EPSS jump. No filler.",
+    "placeholder": "you@example.com",
+    "subscribe": "Subscribe"
+  },
+  "Insights": {
+    "title": "Insights",
+    "subtitle": "Continuously refreshed reports from the VulnScope database.",
+    "lastUpdated": "Last updated {date}",
+    "topPackages": {
+      "title": "Most-vulnerable packages of all time",
+      "blurb": "Packages with the largest number of distinct CVEs across all ingested ecosystems.",
+      "col": { "rank": "#", "package": "Package", "ecosystem": "Ecosystem", "cves": "CVEs", "kev": "KEV", "epssMax": "Max EPSS" }
+    },
+    "kevCatalog": {
+      "title": "Every CVE on the CISA KEV catalog",
+      "blurb": "The complete list of vulnerabilities CISA flags as being actively exploited."
+    },
+    "epssRising": {
+      "title": "EPSS-rising vulnerabilities right now",
+      "blurb": "Top CVEs by exploitation probability (EPSS) from the latest model run."
+    },
+    "ecosystemDeepDive": {
+      "title": "{eco} — vulnerability landscape",
+      "blurb": "Every CVE-affected package in the {eco} ecosystem, sorted by risk."
+    }
+  },
   "Jobs": {
     "title": "Sync jobs",
     "subtitle": "Last 100 ingest runs. The scheduler refreshes all sources every 24 hours.",

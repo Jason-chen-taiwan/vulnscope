@@ -1,13 +1,35 @@
+import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { notFound } from "next/navigation";
-import { getCveBundle } from "@/lib/queries";
+import { getCveBundle, getCveById } from "@/lib/queries";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
 import { describeRange } from "@/lib/version-match";
 import type { OsvRange } from "@/lib/osv";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ locale: string; id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+  const cveId = decodeURIComponent(id).toUpperCase();
+  if (!/^CVE-\d{4}-\d+$/.test(cveId)) return { title: cveId };
+  const vuln = await getCveById(cveId);
+  if (!vuln) return { title: cveId, robots: { index: false } };
+  const summary = vuln.summary?.slice(0, 80) ?? "";
+  const title = summary ? `${cveId} — ${summary}` : cveId;
+  const desc = vuln.description?.slice(0, 200) ?? vuln.summary ?? cveId;
+  return {
+    title,
+    description: desc,
+    openGraph: { title, description: desc, type: "article" },
+    twitter: { card: "summary_large_image", title, description: desc },
+  };
+}
 
 export default async function CvePage({
   params,

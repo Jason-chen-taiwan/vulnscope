@@ -71,6 +71,42 @@ set `ADMIN_TOKEN` env to allow remote calls).
 
 Disable via `SCHEDULER_DISABLED=1`.
 
+## Deploy your own
+
+The repo ships with a production-ready `Dockerfile` and `fly.toml` for
+Fly.io. Self-host in three commands:
+
+```bash
+fly launch --copy-config --no-deploy   # accept the existing fly.toml
+fly postgres create                    # or use Neon / Supabase / RDS
+fly secrets set DATABASE_URL=postgres://...
+fly deploy
+```
+
+The in-process scheduler picks up where it left off, so your hosted
+instance refreshes data daily without external cron.
+
+### Hosted demo vs. self-host
+
+The author runs [vulnscope.dev](https://vulnscope.dev) (a hosted demo)
+with Carbon Ads in the sidebar and Plausible analytics to cover server
+costs. **None of that runs in this repo by default** — they're all
+opt-in env vars (`NEXT_PUBLIC_ADS_ENABLED`, `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`,
+`NEXT_PUBLIC_NEWSLETTER_URL`). Self-hosters get a clean, tracker-free
+build. The codebase is 100% open source under MIT — see `.env.example`
+for every available knob.
+
+## Insights pages
+
+`/insights/...` are auto-generated content pages from the database:
+
+- `/insights/most-vulnerable-packages` — top 100 packages across all ecosystems
+- `/insights/cisa-kev-catalog` — every CVE on CISA's Known Exploited list
+- `/insights/epss-rising` — vulnerabilities with the highest exploitation probability
+- `/insights/ecosystem/{eco}` — per-ecosystem breakdown for npm, PyPI, Maven, Go, Debian, Alpine
+
+These power evergreen SEO landing pages and are revalidated hourly.
+
 ## i18n
 
 UI is available in **English** (`/en/...`) and **繁體中文** (`/zh/...`).

@@ -100,6 +100,34 @@
     "noMatches": "沒有符合的套件。",
     "cveCount": "{n} 筆 CVE"
   },
+  "Newsletter": {
+    "title": "📬 每週 KEV 摘要",
+    "blurb": "每週一封短信 — 只有新進 CISA KEV 或 EPSS 大幅上升的 CVE,不灌水。",
+    "placeholder": "you@example.com",
+    "subscribe": "訂閱"
+  },
+  "Insights": {
+    "title": "深度報告",
+    "subtitle": "從 VulnScope 資料庫自動產生的持續更新報告。",
+    "lastUpdated": "最後更新 {date}",
+    "topPackages": {
+      "title": "歷年漏洞最多的套件",
+      "blurb": "所有已收錄生態系中,CVE 數量最多的套件。",
+      "col": { "rank": "#", "package": "套件", "ecosystem": "生態系", "cves": "CVE 數", "kev": "KEV", "epssMax": "最高 EPSS" }
+    },
+    "kevCatalog": {
+      "title": "所有 CISA KEV 收錄的 CVE",
+      "blurb": "CISA 列為「實際正在被利用」的完整漏洞清單。"
+    },
+    "epssRising": {
+      "title": "目前 EPSS 最高的漏洞",
+      "blurb": "依最新一次 EPSS 模型的 30 天內被利用機率排序的 CVE。"
+    },
+    "ecosystemDeepDive": {
+      "title": "{eco} — 漏洞概況",
+      "blurb": "{eco} 生態系中所有受 CVE 影響的套件,按風險排序。"
+    }
+  },
   "Jobs": {
     "title": "同步紀錄",
     "subtitle": "最近 100 次資料同步。排程器每 24 小時自動更新所有來源。",

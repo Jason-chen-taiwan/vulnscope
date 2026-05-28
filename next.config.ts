@@ -4,6 +4,9 @@ import createNextIntlPlugin from "next-intl/plugin";
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const nextConfig: NextConfig = {
+  // Standalone output produces a minimal node_modules + server.js bundle —
+  // required for the Docker production image to stay under ~250 MB.
+  output: "standalone",
   outputFileTracingRoot: __dirname,
   serverExternalPackages: ["@renovatebot/pep440", "xregexp", "pg", "undici"],
   experimental: {

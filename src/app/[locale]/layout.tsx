@@ -4,6 +4,7 @@ import { NextIntlClientProvider, hasLocale } from "next-intl";
 import { getMessages, getTranslations, setRequestLocale } from "next-intl/server";
 import { HeaderSearch } from "@/components/HeaderSearch";
 import { LangSwitcher } from "@/components/LangSwitcher";
+import { Analytics } from "@/components/Analytics";
 import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import "./globals.css";
@@ -87,6 +88,7 @@ export default async function LocaleLayout({
   return (
     <html lang={locale}>
       <body>
+        <Analytics />
         <NextIntlClientProvider locale={locale} messages={messages}>
           <header className="border-b border-[hsl(var(--border))]">
             <nav className="mx-auto max-w-6xl px-4 py-3 flex items-center gap-6">
@@ -98,6 +100,7 @@ export default async function LocaleLayout({
               <Link href="/packages" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("packages")}</Link>
               <Link href={{ pathname: "/search", query: { kev: "true" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("kev")}</Link>
               <Link href={{ pathname: "/search", query: { severity: "CRITICAL" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("critical")}</Link>
+              <Link href="/insights" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">Insights</Link>
               <Link href="/admin/jobs" className="text-sm text-[hsl(var(--muted-foreground))] no-underline" title={t("jobsTitle")}>{t("jobs")}</Link>
               <LangSwitcher />
             </nav>

@@ -1,0 +1,13 @@
+node_modules
+.next
+.pgdata
+.git
+.github
+*.log
+*.tsbuildinfo
+.env.local
+.env*.local
+.DS_Store
+README.md
+CONTRIBUTING.md
+docs
