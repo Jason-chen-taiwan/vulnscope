@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 96" width="480" height="96">
+  <rect width="480" height="96" rx="16" fill="#0a0a0a"/>
+  <text x="32" y="62"
+        font-family="ui-sans-serif, system-ui, -apple-system, Inter, sans-serif"
+        font-size="48" font-weight="700" fill="#fafafa"
+        letter-spacing="-1.5">Vuln</text>
+  <circle cx="160" cy="56" r="6" fill="#dc2626"/>
+  <text x="178" y="62"
+        font-family="ui-sans-serif, system-ui, -apple-system, Inter, sans-serif"
+        font-size="48" font-weight="700" fill="#fafafa"
+        letter-spacing="-1.5">Scope</text>
+  <text x="32" y="84"
+        font-family="JetBrains Mono, ui-monospace, monospace"
+        font-size="13" fill="#737373" letter-spacing="0.5">PACKAGE-CENTRIC CVE LOOKUP · OSV · KEV · EPSS</text>
+</svg>

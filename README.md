@@ -1,4 +1,6 @@
-# VulnScope
+<p align="left">
+  <img src="docs/wordmark.svg" alt="VulnScope" width="480">
+</p>
 
 > **Package-centric CVE lookup, self-hosted in two commands.** Type a package
 > name and a version, see which CVEs affect it and which upgrade clears them.

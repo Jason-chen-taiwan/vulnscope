@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" rx="24" fill="#0a0a0a"/>
+  <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central"
+        font-family="JetBrains Mono, ui-monospace, monospace"
+        font-size="80" font-weight="700" fill="#fafafa"
+        letter-spacing="-4">V</text>
+  <circle cx="96" cy="92" r="10" fill="#dc2626"/>
+</svg>
