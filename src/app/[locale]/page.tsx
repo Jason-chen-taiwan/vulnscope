@@ -1,4 +1,5 @@
-import Link from "next/link";
+import { getTranslations, setRequestLocale } from "next-intl/server";
+import { Link } from "@/i18n/navigation";
 import { getDashboardStats, getRecentKev, getRecentVulns, getTopPackages } from "@/lib/queries";
 import { getFreshness } from "@/lib/sync-jobs";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
@@ -7,7 +8,10 @@ export const dynamic = "force-dynamic";
 
 const FEATURED_ECOSYSTEMS = ["Debian", "Maven", "npm", "PyPI", "Go", "Alpine"];
 
-export default async function Home() {
+export default async function Home({ params }: { params: Promise<{ locale: string }> }) {
+  const { locale } = await params;
+  setRequestLocale(locale);
+  const t = await getTranslations({ locale, namespace: "Home" });
   const [stats, kev, recent, freshness, ...top] = await Promise.all([
     getDashboardStats(),
     getRecentKev(8),
@@ -20,40 +24,38 @@ export default async function Home() {
   const oldest = freshness
     .filter((f) => f.finished_at)
     .map((f) => new Date(f.finished_at!).getTime())
-    .reduce((min, t) => Math.min(min, t), Date.now());
+    .reduce((min, ti) => Math.min(min, ti), Date.now());
   const oldestAgeH = (Date.now() - oldest) / 3600_000;
+
+  const dateLocale = locale === "zh" ? "zh-TW" : "en";
 
   return (
     <div className="space-y-8">
       <section>
         <h1 className="text-2xl font-bold tracking-tight mb-2">VulnScope</h1>
-        <p className="text-[hsl(var(--muted-foreground))]">
-          Package-centric vulnerability lookup. Type a package name or CVE ID above, or click a card.
-        </p>
-        <FreshnessLine oldestAgeH={oldestAgeH} freshness={freshness} />
+        <p className="text-[hsl(var(--muted-foreground))]">{t("tagline")}</p>
+        <FreshnessLine oldestAgeH={oldestAgeH} freshness={freshness} t={t} />
       </section>
 
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Total CVEs" value={stats.vuln_total} />
-        <StatCard label="Packages tracked" value={stats.package_total} />
-        <StatCard label="In CISA KEV" value={stats.kev_total} highlight />
-        <StatCard label="Critical (any)" value={stats.critical_total} />
+        <StatCard label={t("stats.totalCves")} value={stats.vuln_total} locale={dateLocale} />
+        <StatCard label={t("stats.packagesTracked")} value={stats.package_total} locale={dateLocale} />
+        <StatCard label={t("stats.inKev")} value={stats.kev_total} locale={dateLocale} highlight />
+        <StatCard label={t("stats.critical")} value={stats.critical_total} locale={dateLocale} />
       </section>
 
       <section className="grid lg:grid-cols-2 gap-6">
-        <Card title="🚨 Recent CISA KEV additions" href="/search?kev=true" linkLabel="See all KEV →">
+        <Card title={t("recentKev")} href={{ pathname: "/search", query: { kev: "true" } }} linkLabel={t("seeAllKev")}>
           <ul className="divide-y divide-[hsl(var(--border))]">
             {kev.map((k) => (
               <li key={k.cve_id} className="py-2 flex gap-3 items-baseline">
-                <Link href={`/cve/${k.cve_id}`} className="font-mono text-sm no-underline">
-                  {k.cve_id}
-                </Link>
+                <Link href={`/cve/${k.cve_id}`} className="font-mono text-sm no-underline">{k.cve_id}</Link>
                 <span className="text-sm text-[hsl(var(--muted-foreground))] flex-1 truncate">
-                  {k.summary ?? "(no summary)"}
+                  {k.summary ?? t("noSummary")}
                 </span>
                 {k.kev_added_at && (
                   <time className="text-xs text-[hsl(var(--muted-foreground))]">
-                    {new Date(k.kev_added_at).toLocaleDateString()}
+                    {new Date(k.kev_added_at).toLocaleDateString(dateLocale)}
                   </time>
                 )}
               </li>
@@ -61,21 +63,19 @@ export default async function Home() {
           </ul>
         </Card>
 
-        <Card title="📰 Recently published" href="/search" linkLabel="Browse all →">
+        <Card title={t("recentPublished")} href="/search" linkLabel={t("browseAll")}>
           <ul className="divide-y divide-[hsl(var(--border))]">
             {recent.map((r) => (
               <li key={r.cve_id} className="py-2 flex gap-3 items-baseline">
                 <SeverityBadge severity={r.severity} score={r.base_score} />
-                <Link href={`/cve/${r.cve_id}`} className="font-mono text-sm no-underline">
-                  {r.cve_id}
-                </Link>
+                <Link href={`/cve/${r.cve_id}`} className="font-mono text-sm no-underline">{r.cve_id}</Link>
                 <KevBadge kev={r.kev} />
                 <span className="text-sm text-[hsl(var(--muted-foreground))] flex-1 truncate">
-                  {r.summary ?? "(no summary)"}
+                  {r.summary ?? t("noSummary")}
                 </span>
                 {r.published_at && (
                   <time className="text-xs text-[hsl(var(--muted-foreground))]">
-                    {new Date(r.published_at).toLocaleDateString()}
+                    {new Date(r.published_at).toLocaleDateString(dateLocale)}
                   </time>
                 )}
               </li>
@@ -86,9 +86,9 @@ export default async function Home() {
 
       <section>
         <div className="flex items-baseline justify-between mb-3">
-          <h2 className="text-lg font-semibold">Most-vulnerable packages</h2>
+          <h2 className="text-lg font-semibold">{t("mostVulnerable")}</h2>
           <Link href="/packages" className="text-xs text-[hsl(var(--muted-foreground))] no-underline">
-            Browse all packages →
+            {t("browseAllPackages")}
           </Link>
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -96,8 +96,8 @@ export default async function Home() {
             <div key={eco} className="rounded-lg border border-[hsl(var(--border))] p-3">
               <div className="flex items-baseline justify-between mb-2">
                 <h3 className="text-sm font-semibold font-mono">{eco}</h3>
-                <Link href={`/packages?ecosystem=${encodeURIComponent(eco)}`} className="text-xs text-[hsl(var(--muted-foreground))] no-underline">
-                  all →
+                <Link href={{ pathname: "/packages", query: { ecosystem: eco } }} className="text-xs text-[hsl(var(--muted-foreground))] no-underline">
+                  {t("ecoAll")}
                 </Link>
               </div>
               <ul className="space-y-0.5 text-sm">
@@ -127,42 +127,47 @@ export default async function Home() {
 function FreshnessLine({
   oldestAgeH,
   freshness,
+  t,
 }: {
   oldestAgeH: number;
   freshness: { source: string; finished_at: Date | null; status: string }[];
+  t: Awaited<ReturnType<typeof getTranslations<"Home">>>;
 }) {
   if (freshness.length === 0) {
+    const txt = t("freshnessNone", { link: "__LINK__" });
+    const [before, after] = txt.split("__LINK__");
     return (
       <p className="mt-2 text-xs text-yellow-600">
-        ⏳ No data yet — the scheduler runs its first ingest ~10 seconds after server start.
-        See <Link href="/admin/jobs" className="underline">/admin/jobs</Link>.
+        {before}
+        <Link href="/admin/jobs" className="underline">/admin/jobs</Link>
+        {after}
       </p>
     );
   }
   const ageLabel = oldestAgeH < 1
-    ? `${Math.round(oldestAgeH * 60)} min ago`
+    ? t("freshnessAgeMin", { n: Math.round(oldestAgeH * 60) })
     : oldestAgeH < 48
-    ? `${oldestAgeH.toFixed(1)}h ago`
-    : `${Math.floor(oldestAgeH / 24)}d ago`;
+    ? t("freshnessAgeHour", { n: Number(oldestAgeH.toFixed(1)) })
+    : t("freshnessAgeDay", { n: Math.floor(oldestAgeH / 24) });
   const color = oldestAgeH < 26 ? "text-green-600" : oldestAgeH < 72 ? "text-yellow-600" : "text-red-600";
   const failed = freshness.filter((f) => f.status === "failed").length;
   return (
     <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
       <span className={color}>● </span>
-      Data refreshed: oldest source {ageLabel}
-      {failed > 0 && <span className="text-red-600 ml-2">· {failed} source{failed === 1 ? "" : "s"} failing</span>}
-      <Link href="/admin/jobs" className="ml-3 underline">view sync jobs</Link>
+      {t("freshnessLine", { age: ageLabel })}
+      {failed > 0 && <span className="text-red-600 ml-2">· {t("freshnessFailing", { n: failed })}</span>}
+      <Link href="/admin/jobs" className="ml-3 underline">{t("viewSyncJobs")}</Link>
     </p>
   );
 }
 
-function StatCard({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
+function StatCard({ label, value, highlight, locale }: { label: string; value: number; highlight?: boolean; locale: string }) {
   return (
     <div
       className={`rounded-lg border border-[hsl(var(--border))] p-4 ${highlight ? "bg-red-50 dark:bg-red-950/30" : ""}`}
     >
       <div className="text-xs uppercase tracking-wide text-[hsl(var(--muted-foreground))]">{label}</div>
-      <div className="mt-1 text-2xl font-bold font-mono">{value.toLocaleString()}</div>
+      <div className="mt-1 text-2xl font-bold font-mono">{value.toLocaleString(locale)}</div>
     </div>
   );
 }
@@ -174,7 +179,7 @@ function Card({
   children,
 }: {
   title: string;
-  href: string;
+  href: React.ComponentProps<typeof Link>["href"];
   linkLabel: string;
   children: React.ReactNode;
 }) {

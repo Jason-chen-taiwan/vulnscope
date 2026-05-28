@@ -1,4 +1,5 @@
-import Link from "next/link";
+import { getTranslations, setRequestLocale } from "next-intl/server";
+import { Link } from "@/i18n/navigation";
 import { notFound } from "next/navigation";
 import { getPackageWithCves } from "@/lib/queries";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
@@ -11,9 +12,11 @@ export const dynamic = "force-dynamic";
 export default async function PackagePage({
   params,
 }: {
-  params: Promise<{ ecosystem: string; name: string }>;
+  params: Promise<{ locale: string; ecosystem: string; name: string }>;
 }) {
-  const { ecosystem: ecoRaw, name: nameRaw } = await params;
+  const { locale, ecosystem: ecoRaw, name: nameRaw } = await params;
+  setRequestLocale(locale);
+  const t = await getTranslations({ locale, namespace: "Package" });
   const ecosystem = decodeURIComponent(ecoRaw);
   const rawName = decodeURIComponent(nameRaw);
   const name = ecosystem === "PyPI" ? normalizePypiName(rawName) : rawName;
@@ -21,7 +24,6 @@ export default async function PackagePage({
   const bundle = await getPackageWithCves(ecosystem, name);
   if (!bundle) notFound();
 
-  // Counts by severity for the header.
   const counts: Record<string, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, NONE: 0 };
   for (const c of bundle.cves) {
     const k = c.severity ?? "NONE";
@@ -38,9 +40,7 @@ export default async function PackagePage({
           <span className="font-mono">{bundle.package.name}</span>
         </h1>
         <div className="flex flex-wrap gap-3 text-sm">
-          <span>
-            <strong>{bundle.cves.length}</strong> total CVE{bundle.cves.length === 1 ? "" : "s"}
-          </span>
+          <span>{t("totalCve", { n: bundle.cves.length })}</span>
           {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((s) => (
             counts[s] > 0 ? (
               <span key={s} className="flex items-center gap-1">
@@ -56,22 +56,20 @@ export default async function PackagePage({
 
       <section>
         <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-          All known vulnerabilities
+          {t("vulns")}
         </h2>
         {bundle.cves.length === 0 ? (
-          <p className="text-sm text-[hsl(var(--muted-foreground))]">No CVEs found for this package.</p>
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("noCves")}</p>
         ) : (
           <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
             {bundle.cves.map((c) => (
               <li key={`${c.cve_id}-${c.ranges_json?.[0]?.events?.[0]?.introduced ?? ""}`} className="px-4 py-3 space-y-1">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <SeverityBadge severity={c.severity} score={c.base_score} />
-                  <Link href={`/cve/${c.cve_id}`} className="font-mono font-medium no-underline">
-                    {c.cve_id}
-                  </Link>
+                  <Link href={`/cve/${c.cve_id}`} className="font-mono font-medium no-underline">{c.cve_id}</Link>
                   <KevBadge kev={c.kev} />
                   <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] truncate">
-                    {c.summary ?? "(no summary)"}
+                    {c.summary ?? t("noSummary")}
                   </span>
                 </div>
                 {c.ranges_json && c.ranges_json.length > 0 && (

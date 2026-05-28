@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useTranslations } from "next-intl";
 
 interface CheckResponse {
   data: {
@@ -26,6 +27,7 @@ export function VersionChecker({
   ecosystem: string;
   name: string;
 }) {
+  const t = useTranslations("Package.checker");
   const [v, setV] = useState("");
   const [result, setResult] = useState<CheckResponse["data"] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,14 +50,19 @@ export function VersionChecker({
     });
   }
 
+  const placeholder =
+    ecosystem === "npm" ? t("placeholderNpm") :
+    ecosystem === "PyPI" ? t("placeholderPypi") :
+    t("placeholderGeneric");
+
   return (
     <div className="rounded-lg border border-[hsl(var(--border))] p-4 space-y-3">
-      <h2 className="font-semibold">✅ Check your installed version</h2>
+      <h2 className="font-semibold">{t("title")}</h2>
       <form onSubmit={submit} className="flex gap-2">
         <input
           value={v}
           onChange={(e) => setV(e.target.value)}
-          placeholder={ecosystem === "npm" ? "e.g. 4.17.20" : "e.g. 3.2.0"}
+          placeholder={placeholder}
           className="flex-1 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-3 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-red-500"
         />
         <button
@@ -63,7 +70,7 @@ export function VersionChecker({
           disabled={pending}
           className="rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium disabled:opacity-50"
         >
-          {pending ? "Checking…" : "Check"}
+          {pending ? t("checking") : t("check")}
         </button>
       </form>
 
@@ -74,13 +81,11 @@ export function VersionChecker({
           {result.is_vulnerable ? (
             <div className="rounded bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
               <p className="font-medium text-red-700 dark:text-red-300">
-                ⚠ {result.version} is affected by {result.affected_by.length} CVE
-                {result.affected_by.length === 1 ? "" : "s"}.
+                {t("vulnerable", { version: result.version, n: result.affected_by.length })}
               </p>
               {result.recommended_version && (
                 <p className="text-xs mt-1">
-                  Recommended upgrade target:{" "}
-                  <code className="font-mono font-bold">{result.recommended_version}</code>
+                  {t("recommended", { version: result.recommended_version })}
                 </p>
               )}
               <ul className="mt-2 space-y-1 text-xs">
@@ -90,7 +95,7 @@ export function VersionChecker({
                     {m.severity && <span className="ml-2 opacity-70">[{m.severity}]</span>}
                     {m.kev && <span className="ml-2 text-[hsl(15,82%,30%)] font-bold">KEV</span>}
                     {m.fixed_in && (
-                      <span className="ml-2 opacity-70">fixed in {m.fixed_in}</span>
+                      <span className="ml-2 opacity-70">{t("fixedIn", { version: m.fixed_in })}</span>
                     )}
                   </li>
                 ))}
@@ -99,7 +104,7 @@ export function VersionChecker({
           ) : (
             <div className="rounded bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 p-3">
               <p className="font-medium text-green-700 dark:text-green-300">
-                ✓ {result.version} is not affected by any known CVE in this DB.
+                {t("clean", { version: result.version })}
               </p>
             </div>
           )}

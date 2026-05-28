@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
+import { useRouter } from "@/i18n/navigation";
 
 interface Suggestion {
   ecosystem: string;
@@ -10,6 +11,7 @@ interface Suggestion {
 }
 
 export function HeaderSearch() {
+  const t = useTranslations("Nav");
   const [q, setQ] = useState("");
   const [items, setItems] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
@@ -81,7 +83,7 @@ export function HeaderSearch() {
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={onKeyDown}
         autoComplete="off"
-        placeholder="Search CVE-ID, package, vendor, keyword…"
+        placeholder={t("searchPlaceholder")}
         className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-red-500"
       />
       {open && items.length > 0 && (

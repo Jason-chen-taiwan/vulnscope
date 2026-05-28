@@ -1,4 +1,5 @@
-import Link from "next/link";
+import { getTranslations, setRequestLocale } from "next-intl/server";
+import { Link } from "@/i18n/navigation";
 import { notFound } from "next/navigation";
 import { getCveBundle } from "@/lib/queries";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
@@ -8,8 +9,15 @@ import type { OsvRange } from "@/lib/osv";
 
 export const dynamic = "force-dynamic";
 
-export default async function CvePage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export default async function CvePage({
+  params,
+}: {
+  params: Promise<{ locale: string; id: string }>;
+}) {
+  const { locale, id } = await params;
+  setRequestLocale(locale);
+  const t = await getTranslations({ locale, namespace: "Cve" });
+  const dateLocale = locale === "zh" ? "zh-TW" : "en";
   const cveId = decodeURIComponent(id).toUpperCase();
   if (!/^CVE-\d{4}-\d+$/.test(cveId)) notFound();
 
@@ -18,16 +26,14 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
     return (
       <div className="space-y-4">
         <h1 className="text-xl font-mono">{cveId}</h1>
-        <p className="text-[hsl(var(--muted-foreground))]">
-          Not in this database (Phase 0 covers npm + PyPI via OSV + CISA KEV).
-        </p>
+        <p className="text-[hsl(var(--muted-foreground))]">{t("notInDb")}</p>
         <a
           className="underline"
           href={`https://nvd.nist.gov/vuln/detail/${cveId}`}
           target="_blank"
           rel="noreferrer noopener"
         >
-          Look up {cveId} on NVD ↗
+          {t("lookupNvd", { id: cveId })}
         </a>
       </div>
     );
@@ -47,16 +53,20 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
         </div>
         {vuln.summary && <p className="text-lg">{vuln.summary}</p>}
         <div className="text-xs text-[hsl(var(--muted-foreground))] flex flex-wrap gap-4">
-          {vuln.published_at && <span>Published: {new Date(vuln.published_at).toLocaleDateString()}</span>}
-          {vuln.modified_at && <span>Modified: {new Date(vuln.modified_at).toLocaleDateString()}</span>}
-          {vuln.kev_added_at && <span className="text-[hsl(15,82%,30%)] font-medium">Added to CISA KEV: {new Date(vuln.kev_added_at).toLocaleDateString()}</span>}
+          {vuln.published_at && <span>{t("published", { date: new Date(vuln.published_at).toLocaleDateString(dateLocale) })}</span>}
+          {vuln.modified_at && <span>{t("modified", { date: new Date(vuln.modified_at).toLocaleDateString(dateLocale) })}</span>}
+          {vuln.kev_added_at && (
+            <span className="text-[hsl(15,82%,30%)] font-medium">
+              {t("addedToKev", { date: new Date(vuln.kev_added_at).toLocaleDateString(dateLocale) })}
+            </span>
+          )}
         </div>
       </header>
 
       {vuln.description && (
         <section>
           <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-            Description
+            {t("description")}
           </h2>
           <p className="whitespace-pre-wrap">{vuln.description}</p>
         </section>
@@ -64,10 +74,10 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
 
       <section>
         <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-          Affected packages ({affected.length})
+          {t("affectedPackages", { n: affected.length })}
         </h2>
         {affected.length === 0 ? (
-          <p className="text-sm text-[hsl(var(--muted-foreground))]">No package mapping in OSV.</p>
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("noPackageMapping")}</p>
         ) : (
           <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
             {affected.map((a: {
@@ -83,9 +93,6 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
                 </Link>
                 <span className="text-sm text-[hsl(var(--muted-foreground))] font-mono">
                   {a.ranges_json.map((r) => describeRange(r)).filter(Boolean).join("  |  ")}
-                  {a.versions_json && a.versions_json.length > 0 && !a.ranges_json?.length && (
-                    <span>exact: {a.versions_json.join(", ")}</span>
-                  )}
                 </span>
               </li>
             ))}
@@ -96,15 +103,15 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
       {scores.length > 0 && (
         <section>
           <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-            CVSS scores
+            {t("cvssScores")}
           </h2>
           <table className="text-sm w-full">
             <thead className="text-xs uppercase text-[hsl(var(--muted-foreground))]">
               <tr>
-                <th className="text-left py-1">Source</th>
-                <th className="text-left py-1">Version</th>
-                <th className="text-left py-1">Severity</th>
-                <th className="text-left py-1">Vector</th>
+                <th className="text-left py-1">{t("source")}</th>
+                <th className="text-left py-1">{t("version")}</th>
+                <th className="text-left py-1">{t("severityCol")}</th>
+                <th className="text-left py-1">{t("vector")}</th>
               </tr>
             </thead>
             <tbody className="font-mono text-xs">
@@ -126,7 +133,7 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
       {refs.length > 0 && (
         <section>
           <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-            References ({refs.length})
+            {t("references", { n: refs.length })}
           </h2>
           <ul className="space-y-1 text-sm">
             {refs.slice(0, 50).map((r: { url: string; type: string | null }) => (
@@ -140,7 +147,7 @@ export default async function CvePage({ params }: { params: Promise<{ id: string
               </li>
             ))}
             {refs.length > 50 && (
-              <li className="text-xs text-[hsl(var(--muted-foreground))]">… {refs.length - 50} more</li>
+              <li className="text-xs text-[hsl(var(--muted-foreground))]">{t("moreRefs", { n: refs.length - 50 })}</li>
             )}
           </ul>
         </section>

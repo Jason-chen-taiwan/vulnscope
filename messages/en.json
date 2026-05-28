@@ -1,0 +1,117 @@
+{
+  "Meta": {
+    "title": "VulnScope — package-centric CVE lookup",
+    "description": "Self-hosted CVE search across 14 ecosystems. Package-centric: paste a version, see what's exploitable. Powered by OSV.dev, CISA KEV, and EPSS."
+  },
+  "Nav": {
+    "home": "Home",
+    "packages": "Packages",
+    "kev": "KEV",
+    "critical": "Critical",
+    "jobs": "Jobs",
+    "jobsTitle": "Data refresh status",
+    "searchPlaceholder": "Search CVE-ID, package, vendor, keyword…",
+    "language": "Language"
+  },
+  "Footer": {
+    "dataFrom": "Data from {osv}, {kev}, and {epss}.",
+    "syncStatus": "Sync status",
+    "github": "GitHub"
+  },
+  "Home": {
+    "tagline": "Package-centric vulnerability lookup. Type a package name or CVE ID above, or click a card.",
+    "stats": {
+      "totalCves": "Total CVEs",
+      "packagesTracked": "Packages tracked",
+      "inKev": "In CISA KEV",
+      "critical": "Critical (any)"
+    },
+    "recentKev": "🚨 Recent CISA KEV additions",
+    "seeAllKev": "See all KEV →",
+    "recentPublished": "📰 Recently published",
+    "browseAll": "Browse all →",
+    "mostVulnerable": "Most-vulnerable packages",
+    "browseAllPackages": "Browse all packages →",
+    "ecoAll": "all →",
+    "noSummary": "(no summary)",
+    "freshnessAgeMin": "{n} min ago",
+    "freshnessAgeHour": "{n}h ago",
+    "freshnessAgeDay": "{n}d ago",
+    "freshnessLine": "Data refreshed: oldest source {age}",
+    "freshnessFailing": "{n, plural, =1 {1 source failing} other {# sources failing}}",
+    "freshnessNone": "⏳ No data yet — the scheduler runs its first ingest ~10 seconds after server start. See {link}.",
+    "viewSyncJobs": "view sync jobs"
+  },
+  "Search": {
+    "title": "Search",
+    "results": "{n, plural, =0 {No results} =1 {1 result} other {# results}}",
+    "for": "for",
+    "noResults": "No results.",
+    "severity": "Severity:",
+    "ecosystem": "Ecosystem:",
+    "kevOnly": "⚠ In KEV only",
+    "prev": "← Prev",
+    "next": "Next →",
+    "pageOf": "Page {page} of {total}"
+  },
+  "Cve": {
+    "notInDb": "Not in this database (Phase 0 covers npm + PyPI via OSV + CISA KEV).",
+    "lookupNvd": "Look up {id} on NVD ↗",
+    "published": "Published: {date}",
+    "modified": "Modified: {date}",
+    "addedToKev": "Added to CISA KEV: {date}",
+    "description": "Description",
+    "affectedPackages": "Affected packages ({n})",
+    "noPackageMapping": "No package mapping in OSV.",
+    "cvssScores": "CVSS scores",
+    "source": "Source",
+    "version": "Version",
+    "severityCol": "Severity",
+    "vector": "Vector",
+    "references": "References ({n})",
+    "moreRefs": "… {n} more"
+  },
+  "Package": {
+    "totalCve": "{n, plural, =0 {No CVEs} =1 {1 total CVE} other {# total CVEs}}",
+    "vulns": "All known vulnerabilities",
+    "noCves": "No CVEs found for this package.",
+    "noSummary": "(no summary)",
+    "checker": {
+      "title": "✅ Check your installed version",
+      "placeholderNpm": "e.g. 4.17.20",
+      "placeholderPypi": "e.g. 3.2.0",
+      "placeholderGeneric": "e.g. 1.2.3",
+      "check": "Check",
+      "checking": "Checking…",
+      "vulnerable": "⚠ {version} is affected by {n, plural, =1 {1 CVE} other {# CVEs}}.",
+      "recommended": "Recommended upgrade target: {version}",
+      "clean": "✓ {version} is not affected by any known CVE in this DB.",
+      "fixedIn": "fixed in {version}"
+    }
+  },
+  "Packages": {
+    "title": "Packages",
+    "subtitle": "{n, number} packages indexed across {eco} ecosystems.",
+    "filterPlaceholder": "Filter by name (e.g. openssl, nginx, log4j)…",
+    "allEcosystems": "All ecosystems",
+    "sortCves": "Most CVEs",
+    "sortName": "Name",
+    "apply": "Apply",
+    "noMatches": "No matches.",
+    "cveCount": "{n, plural, =1 {1 CVE} other {# CVEs}}"
+  },
+  "Jobs": {
+    "title": "Sync jobs",
+    "subtitle": "Last 100 ingest runs. The scheduler refreshes all sources every 24 hours.",
+    "colSource": "Source",
+    "colStarted": "Started",
+    "colDuration": "Duration",
+    "colStatus": "Status",
+    "colSeen": "Seen",
+    "colChanged": "Changed",
+    "colError": "Error",
+    "empty": "No jobs yet. They'll appear here ~10s after server boot once the scheduler runs its first tick.",
+    "trigger": "Trigger refresh now",
+    "triggerHint": "Localhost-only unless {token} env is set."
+  }
+}

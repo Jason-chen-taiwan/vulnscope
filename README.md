@@ -71,6 +71,16 @@ set `ADMIN_TOKEN` env to allow remote calls).
 
 Disable via `SCHEDULER_DISABLED=1`.
 
+## i18n
+
+UI is available in **English** (`/en/...`) and **繁體中文** (`/zh/...`).
+The root path `/` redirects to the user's preferred locale based on
+`Accept-Language`. Toggle via the **EN / 中** switch in the header.
+
+To add another language: drop a `messages/<lang>.json` into the repo
+mirroring `messages/en.json`, add the code to `src/i18n/routing.ts`,
+and you're done — no other code changes needed.
+
 ## What it does
 
 | URL | What you see |

@@ -1,4 +1,17 @@
+import { getTranslations, setRequestLocale } from "next-intl/server";
 import { getRecentSyncJobs } from "@/lib/sync-jobs";
+
+function TriggerHint({ t }: { t: (key: string, values?: Record<string, string>) => string }) {
+  const txt = t("triggerHint", { token: "__TOKEN__" });
+  const [before, after] = txt.split("__TOKEN__");
+  return (
+    <span className="ml-3 text-xs text-[hsl(var(--muted-foreground))]">
+      {before}
+      <code className="font-mono">ADMIN_TOKEN</code>
+      {after}
+    </span>
+  );
+}
 
 export const dynamic = "force-dynamic";
 
@@ -13,26 +26,32 @@ interface SyncJobRow {
   error_message: string | null;
 }
 
-export default async function JobsPage() {
+export default async function JobsPage({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
+  const { locale } = await params;
+  setRequestLocale(locale);
+  const t = await getTranslations({ locale, namespace: "Jobs" });
+  const dateLocale = locale === "zh" ? "zh-TW" : "en";
   const jobs = (await getRecentSyncJobs(100)) as SyncJobRow[];
   return (
     <div className="space-y-4">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">Sync jobs</h1>
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          Last 100 ingest runs. The scheduler refreshes all sources every 24 hours.
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{t("title")}</h1>
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("subtitle")}</p>
       </header>
       <table className="w-full text-sm">
         <thead className="text-xs uppercase text-[hsl(var(--muted-foreground))]">
           <tr>
-            <th className="text-left py-1 pr-3">Source</th>
-            <th className="text-left py-1 pr-3">Started</th>
-            <th className="text-left py-1 pr-3">Duration</th>
-            <th className="text-left py-1 pr-3">Status</th>
-            <th className="text-right py-1 pr-3">Seen</th>
-            <th className="text-right py-1 pr-3">Changed</th>
-            <th className="text-left py-1">Error</th>
+            <th className="text-left py-1 pr-3">{t("colSource")}</th>
+            <th className="text-left py-1 pr-3">{t("colStarted")}</th>
+            <th className="text-left py-1 pr-3">{t("colDuration")}</th>
+            <th className="text-left py-1 pr-3">{t("colStatus")}</th>
+            <th className="text-right py-1 pr-3">{t("colSeen")}</th>
+            <th className="text-right py-1 pr-3">{t("colChanged")}</th>
+            <th className="text-left py-1">{t("colError")}</th>
           </tr>
         </thead>
         <tbody className="font-mono text-xs">
@@ -48,7 +67,7 @@ export default async function JobsPage() {
             return (
               <tr key={j.id} className="border-t border-[hsl(var(--border))]">
                 <td className="py-1 pr-3">{j.source}</td>
-                <td className="py-1 pr-3">{new Date(j.started_at).toLocaleString()}</td>
+                <td className="py-1 pr-3">{new Date(j.started_at).toLocaleString(dateLocale)}</td>
                 <td className="py-1 pr-3">{duration}</td>
                 <td className={`py-1 pr-3 font-bold ${cls}`}>{j.status}</td>
                 <td className="py-1 pr-3 text-right">{j.records_seen ?? "—"}</td>
@@ -60,7 +79,7 @@ export default async function JobsPage() {
           {jobs.length === 0 && (
             <tr>
               <td colSpan={7} className="py-4 text-center text-[hsl(var(--muted-foreground))]">
-                No jobs yet. They'll appear here ~10s after server boot once the scheduler runs its first tick.
+                {t("empty")}
               </td>
             </tr>
           )}
@@ -71,11 +90,9 @@ export default async function JobsPage() {
           type="submit"
           className="rounded-md bg-zinc-900 text-white dark:bg-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium"
         >
-          Trigger refresh now
+          {t("trigger")}
         </button>
-        <span className="ml-3 text-xs text-[hsl(var(--muted-foreground))]">
-          Localhost-only unless <code className="font-mono">ADMIN_TOKEN</code> env is set.
-        </span>
+        <TriggerHint t={t} />
       </form>
     </div>
   );
