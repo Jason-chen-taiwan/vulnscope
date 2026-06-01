@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { checkPackageVersion } from "@/lib/queries";
-import { ok, fail } from "@/lib/envelope";
+import { ok, fail, corsPreflight } from "@/lib/envelope";
 import { normalizePypiName } from "@/lib/osv";
 
 export const dynamic = "force-dynamic";
@@ -23,4 +23,8 @@ export async function GET(
   const result = await checkPackageVersion(ecosystem, normalized, version.trim());
   if (!result) return fail(404, "NOT_FOUND", `pkg:${ecosystem}/${normalized} unknown`);
   return ok(result);
+}
+
+export async function OPTIONS() {
+  return corsPreflight();
 }

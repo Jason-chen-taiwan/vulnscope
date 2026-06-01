@@ -145,6 +145,7 @@ export interface PackageBundle {
     summary: string | null;
     description: string | null;
     kev: boolean;
+    epss_score: number | null;
     severity: string | null;
     base_score: number | null;
     ranges_json: OsvRange[];
@@ -166,6 +167,7 @@ export async function getPackageWithCves(
   const { rows: cves } = await pool.query(
     `
     SELECT v.cve_id, v.summary, v.description, v.kev,
+           v.epss_score::float8 AS epss_score,
            cs.severity AS severity, cs.base_score::float8 AS base_score,
            a.ranges_json, a.versions_json
       FROM affected a
@@ -194,10 +196,14 @@ export interface VersionCheckResult {
     severity: string | null;
     base_score: number | null;
     kev: boolean;
+    epss_score: number | null;
     fixed_in: string | null;
     summary: string | null;
   }>;
   recommended_version: string | null;
+  /** Set by /check-batch when the package isn't in our DB. The CLI
+   *  surfaces it so users can see which inputs couldn't be checked. */
+  unknown?: boolean;
 }
 
 export async function checkPackageVersion(
@@ -218,6 +224,7 @@ export async function checkPackageVersion(
         severity: c.severity,
         base_score: c.base_score,
         kev: c.kev,
+        epss_score: c.epss_score,
         fixed_in: r.fixedIn,
         summary: c.summary,
       });
