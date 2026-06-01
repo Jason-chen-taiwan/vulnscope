@@ -202,12 +202,17 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
       await fs.unlink(zipPath).catch(() => {});
       const files = (await fs.readdir(extractDir)).filter((f) => f.endsWith(".json"));
       seen = files.length;
-      // Pre-fetch the modified_at we already have for any CVE so the
-      // per-record skip is a Map lookup, not a SELECT per record.
+      // Pre-fetch modified_at we already have so per-record skip is a
+      // Map lookup, not a SELECT per record. Use DISTINCT JOIN (uses the
+      // affected.ecosystem + cve_id indexes) — the EXISTS-subquery form
+      // we had before caused a sequential scan on vulnerabilities and
+      // would saturate the 256MB Postgres machine.
       const knownModified = new Map<string, number>();
       const knownRows = await pool.query<{ cve_id: string; modified_at: Date | null }>(
-        `SELECT v.cve_id, v.modified_at FROM vulnerabilities v
-          WHERE EXISTS (SELECT 1 FROM affected a WHERE a.cve_id = v.cve_id AND a.ecosystem = $1)`,
+        `SELECT DISTINCT v.cve_id, v.modified_at
+           FROM affected a
+           JOIN vulnerabilities v ON v.cve_id = a.cve_id
+          WHERE a.ecosystem = $1`,
         [eco],
       );
       for (const r of knownRows.rows) {
