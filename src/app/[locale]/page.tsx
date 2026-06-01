@@ -2,6 +2,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { getDashboardStats, getRecentKev, getRecentVulns, getTopPackages } from "@/lib/queries";
 import { getFreshness, isIngestRunning } from "@/lib/sync-jobs";
+import { summarize } from "@/lib/summary";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
@@ -58,7 +59,7 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
               <li key={k.cve_id} className="py-2 flex gap-3 items-baseline">
                 <Link href={`/cve/${k.cve_id}`} className="font-mono text-sm no-underline">{k.cve_id}</Link>
                 <span className="text-sm text-[hsl(var(--muted-foreground))] flex-1 truncate">
-                  {k.summary ?? t("noSummary")}
+                  {summarize(k.summary, k.description) ?? t("noSummary")}
                 </span>
                 {k.kev_added_at && (
                   <time className="text-xs text-[hsl(var(--muted-foreground))]">
@@ -78,7 +79,7 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
                 <Link href={`/cve/${r.cve_id}`} className="font-mono text-sm no-underline">{r.cve_id}</Link>
                 <KevBadge kev={r.kev} />
                 <span className="text-sm text-[hsl(var(--muted-foreground))] flex-1 truncate">
-                  {r.summary ?? t("noSummary")}
+                  {summarize(r.summary, r.description) ?? t("noSummary")}
                 </span>
                 {r.published_at && (
                   <time className="text-xs text-[hsl(var(--muted-foreground))]">

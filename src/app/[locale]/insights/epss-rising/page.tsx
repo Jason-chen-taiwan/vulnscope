@@ -4,6 +4,7 @@ import { Link } from "@/i18n/navigation";
 import { getEpssRising } from "@/lib/insights";
 import { SeverityBadge, KevBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
+import { summarize } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 3600;
@@ -22,6 +23,7 @@ export default async function Page({ params }: { params: Promise<{ locale: strin
   const rows = (await getEpssRising(100)) as Array<{
     cve_id: string;
     summary: string | null;
+    description: string | null;
     epss_score: number | null;
     epss_percentile: number | null;
     kev: boolean;
@@ -46,7 +48,7 @@ export default async function Page({ params }: { params: Promise<{ locale: strin
             <Link href={`/cve/${r.cve_id}`} className="font-mono font-medium no-underline">{r.cve_id}</Link>
             <KevBadge kev={r.kev} />
             <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] truncate">
-              {r.summary ?? ""}
+              {summarize(r.summary, r.description) ?? ""}
             </span>
           </li>
         ))}

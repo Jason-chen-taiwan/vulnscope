@@ -143,6 +143,7 @@ export interface PackageBundle {
   cves: Array<{
     cve_id: string;
     summary: string | null;
+    description: string | null;
     kev: boolean;
     severity: string | null;
     base_score: number | null;
@@ -164,7 +165,7 @@ export async function getPackageWithCves(
 
   const { rows: cves } = await pool.query(
     `
-    SELECT v.cve_id, v.summary, v.kev,
+    SELECT v.cve_id, v.summary, v.description, v.kev,
            cs.severity AS severity, cs.base_score::float8 AS base_score,
            a.ranges_json, a.versions_json
       FROM affected a
@@ -252,14 +253,14 @@ export async function getDashboardStats() {
 
 export async function getRecentKev(limit = 10) {
   const { rows } = await pool.query(
-    `SELECT cve_id, summary, kev_added_at
+    `SELECT cve_id, summary, description, kev_added_at
        FROM vulnerabilities
       WHERE kev = true
       ORDER BY kev_added_at DESC NULLS LAST
       LIMIT $1`,
     [limit],
   );
-  return rows as Array<{ cve_id: string; summary: string | null; kev_added_at: Date | null }>;
+  return rows as Array<{ cve_id: string; summary: string | null; description: string | null; kev_added_at: Date | null }>;
 }
 
 export async function getTopPackages(ecosystem: string, limit = 12) {
@@ -357,7 +358,7 @@ export async function autocompletePackages(prefix: string, limit = 10) {
 
 export async function getRecentVulns(limit = 10) {
   const { rows } = await pool.query(
-    `SELECT v.cve_id, v.summary, v.published_at, v.kev,
+    `SELECT v.cve_id, v.summary, v.description, v.published_at, v.kev,
             cs.severity, cs.base_score::float8 AS base_score
        FROM vulnerabilities v
        LEFT JOIN LATERAL (
@@ -370,7 +371,8 @@ export async function getRecentVulns(limit = 10) {
     [limit],
   );
   return rows as Array<{
-    cve_id: string; summary: string | null; published_at: Date | null;
+    cve_id: string; summary: string | null; description: string | null;
+    published_at: Date | null;
     kev: boolean; severity: string | null; base_score: number | null;
   }>;
 }

@@ -4,6 +4,7 @@ import { Link } from "@/i18n/navigation";
 import { getKevCatalog } from "@/lib/insights";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
+import { summarize } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 3600;
@@ -22,6 +23,7 @@ export default async function Page({ params }: { params: Promise<{ locale: strin
   const rows = (await getKevCatalog(500)) as Array<{
     cve_id: string;
     summary: string | null;
+    description: string | null;
     kev_added_at: Date | null;
     epss_score: number | null;
     severity: string | null;
@@ -44,7 +46,7 @@ export default async function Page({ params }: { params: Promise<{ locale: strin
             <Link href={`/cve/${r.cve_id}`} className="font-mono font-medium no-underline">{r.cve_id}</Link>
             <EpssBadge score={r.epss_score} />
             <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] truncate">
-              {r.summary ?? ""}
+              {summarize(r.summary, r.description) ?? ""}
             </span>
             {r.kev_added_at && (
               <time className="text-xs font-mono text-[hsl(var(--muted-foreground))] shrink-0">

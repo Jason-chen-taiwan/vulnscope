@@ -7,6 +7,7 @@ import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { VersionChecker } from "@/components/VersionChecker";
 import { describeRange } from "@/lib/version-match";
 import { normalizePypiName } from "@/lib/osv";
+import { summarize } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 
@@ -91,7 +92,7 @@ export default async function PackagePage({
                   <Link href={`/cve/${c.cve_id}`} className="font-mono font-medium no-underline">{c.cve_id}</Link>
                   <KevBadge kev={c.kev} />
                   <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] truncate">
-                    {c.summary ?? t("noSummary")}
+                    {summarize(c.summary, c.description) ?? t("noSummary")}
                   </span>
                 </div>
                 {c.ranges_json && c.ranges_json.length > 0 && (

@@ -3,6 +3,7 @@ import { Link, redirect } from "@/i18n/navigation";
 import { searchVulns } from "@/lib/queries";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
+import { summarize } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +66,7 @@ export default async function SearchPage({ params, searchParams }: Props) {
               <KevBadge kev={v.kev} />
               <EpssBadge score={v.epss_score} />
               <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] truncate">
-                {v.summary ?? ""}
+                {summarize(v.summary, v.description) ?? ""}
               </span>
               {v.published_at && (
                 <time className="text-xs text-[hsl(var(--muted-foreground))] font-mono shrink-0">

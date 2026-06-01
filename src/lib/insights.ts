@@ -36,7 +36,7 @@ export async function getTopPackagesAllEcos(limit = 100): Promise<TopPackageRow[
 
 export async function getKevCatalog(limit = 500) {
   const { rows } = await pool.query(
-    `SELECT v.cve_id, v.summary, v.kev_added_at, v.epss_score::float8 AS epss_score,
+    `SELECT v.cve_id, v.summary, v.description, v.kev_added_at, v.epss_score::float8 AS epss_score,
             cs.severity, cs.base_score::float8 AS base_score
        FROM vulnerabilities v
        LEFT JOIN LATERAL (
@@ -53,7 +53,7 @@ export async function getKevCatalog(limit = 500) {
 
 export async function getEpssRising(limit = 100) {
   const { rows } = await pool.query(
-    `SELECT v.cve_id, v.summary, v.epss_score::float8 AS epss_score,
+    `SELECT v.cve_id, v.summary, v.description, v.epss_score::float8 AS epss_score,
             v.epss_percentile::float8 AS epss_percentile, v.kev,
             cs.severity, cs.base_score::float8 AS base_score
        FROM vulnerabilities v
