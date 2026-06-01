@@ -36,7 +36,16 @@ jobs:
       - name: Build CLI
         run: pnpm --filter vulnscope build
 
+      # Authenticated via npm Trusted Publishing (OIDC). No long-lived
+      # token in GitHub secrets — the `id-token: write` permission above
+      # lets npm exchange the GitHub Actions OIDC token for an
+      # ephemeral publish credential, scoped to this exact repo + workflow.
+      #
+      # Setup once on npmjs.com:
+      #   Package → Settings → Publishing access → Add trusted publisher
+      #   Provider: GitHub Actions
+      #   Repository: Jason-chen-taiwan/vulnscope
+      #   Workflow filename: release-cli.yml
+      #   Environment: (leave blank)
       - name: Publish to npm
         run: pnpm --filter vulnscope publish --no-git-checks --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
