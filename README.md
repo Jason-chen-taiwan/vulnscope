@@ -44,8 +44,9 @@ docker compose up -d        # Docker variant
 pnpm db:migrate
 pnpm db:psql -f drizzle/0001_fts_and_trgm.sql
 pnpm db:psql -f drizzle/0002_epss.sql
+pnpm db:psql -f drizzle/0003_sync_jobs.sql
 
-pnpm ingest:all             # ~5 min, downloads ~700 MB of zips once
+pnpm ingest:all             # ~5 min locally, downloads ~700 MB of zips once
 pnpm dev                    # http://localhost:3000
 ```
 
@@ -71,6 +72,66 @@ set `ADMIN_TOKEN` env to allow remote calls).
 
 Disable via `SCHEDULER_DISABLED=1`.
 
+#### Incremental ingest
+
+Each source has a cheap freshness anchor stored in `meta_kv`. When the
+upstream value matches what we already have, the source is skipped
+entirely:
+
+| Source | Anchor | Behaviour when unchanged |
+|---|---|---|
+| KEV | `catalogVersion` | Full skip — no per-entry upsert |
+| OSV (per ecosystem) | `Last-Modified` HTTP header (HEAD request) | Full skip — no download |
+| OSV (per record) | record's `modified` vs. DB's `modified_at` | Skip the record's writes |
+| EPSS | `score_date` from CSV header | Close the stream, skip remaining rows |
+
+A typical day's refresh writes orders of magnitude less than a cold
+ingest — KEV/EPSS often complete in milliseconds, and per-ecosystem OSV
+runs upsert only the records whose `modified` actually advanced.
+
+#### Reliability
+
+A full OSV refresh runs for tens of minutes and touches every record
+in every zip. Three safety nets keep a misbehaving upstream from
+locking the scheduler forever:
+
+- **Per-source timeouts.** The EPSS ingest wraps both the HTTP fetch
+  and the readline loop in an `AbortController` (5 min). Without this,
+  a half-closed Cloudflare connection would hang `for await` indefinitely
+  and the in-flight flag would never clear. This is exactly what
+  happened on the demo deployment — the EPSS row sat in `running` for
+  85 hours before the bug was found.
+- **Orchestrator watchdog.** Even if every per-source timeout fails,
+  the scheduler force-releases the in-flight flag and marks the
+  `refresh` sync_jobs row failed after 3 hours. Defense in depth.
+- **Stale-job reaper.** On boot, any `sync_jobs` row stuck in `running`
+  for more than 2 hours is reclassified as `failed (reaped)`. Anything
+  shorter is left alone so a real in-flight ingest survives a planned
+  restart.
+
+#### Memory profile
+
+OSV's npm zip expands to ~219k JSON files. Naive concurrent reads can
+OOM a small VM, and the symptom is usually a silent crash with a
+permanently-`running` `sync_jobs` row.
+
+The ingest is tuned to keep working-set size bounded regardless of how
+big the DB grows:
+
+- **`pLimit(3)` × chunk size 100** instead of 6 × 200. Bounds in-flight
+  parsed records.
+- **No in-memory `Map<cve_id, modified_at>`.** The per-record skip is a
+  primary-key SELECT against `vulnerabilities` (~1 ms). A bit more
+  round-trip volume, but heap stays flat.
+- **`await new Promise(setImmediate)` at the chunk boundary** so V8 can
+  reap the previous chunk's parsed records before loading the next.
+- **`p-limit` cleared every 50k packages** so the `pkgCache` Map can't
+  grow unbounded.
+
+These add up to a ~512 MB working set even on the npm zip. A
+1 GB Node heap is comfortable; the demo runs on a Fly `shared-cpu-1x`
+with 2 GB RAM.
+
 ## Deploy your own
 
 The repo ships with a production-ready `Dockerfile` and `fly.toml` for
@@ -85,6 +146,31 @@ fly deploy
 
 The in-process scheduler picks up where it left off, so your hosted
 instance refreshes data daily without external cron.
+
+### Sizing on Fly.io (or any small VM)
+
+A few things that look like overspending and aren't:
+
+- **App machine: 2 GB RAM, not 1 GB.** OSV's npm zip plus zod parsing
+  plus the chunk-level concurrent reads sit around ~512 MB working set;
+  1 GB will OOM mid-ingest, leave a stuck `running` row, and skip the
+  next 24 h's tick. Cost on Fly: ~$3/month, inside the $5 free credit.
+- **`auto_stop_machines = 'off'` and `min_machines_running = 1`.** A
+  full refresh takes 30 – 60 minutes and doesn't generate HTTP traffic,
+  so Fly's idle-stop will kill the ingest. The added cost is small;
+  the alternative is a never-completing refresh.
+- **Postgres: 512 MB RAM, not 256 MB.** At 256 MB the WAL checkpoint
+  takes ~2 min on a Debian-sized ingest and stalls connections; 512 MB
+  is the floor at which OSV ingest doesn't hit the pg connection pool.
+- **`config.dangerouslyAllowAllBuilds=true` in the Dockerfile.** pnpm 11
+  refuses to run unapproved postinstall scripts in non-interactive
+  environments. Without this flag the Docker build fails on `esbuild`,
+  `sharp`, etc. Inside the build image we genuinely want them to run.
+
+The hosted demo at `vulnscope-tw.fly.dev` runs on this config. Full
+refresh takes ~65 minutes (npm and Debian are the long tail); a typical
+incremental day takes 30 – 60 minutes with most ecosystems writing
+zero or only a few hundred rows.
 
 ### Hosted demo vs. self-host
 
@@ -213,13 +299,20 @@ when you actually need them.
 These are the things plausibly worth doing without turning this into a
 SaaS. PRs welcome.
 
-- [ ] NVD CVSS fallback — fill score gaps where OSV gives vectors only
+- [x] Incremental ingest (KEV catalogVersion, OSV Last-Modified +
+      per-record `modified`, EPSS score_date) — done; see "Incremental
+      ingest" above.
+- [ ] OSV per-record-changed feed — currently we still download the full
+      zip per ecosystem (zips update hourly upstream) and rely on the
+      per-record `modified` to skip writes. A `firstSeen.json`-style
+      diff source would let us skip the download too.
+- [ ] NVD CVSS fallback — fill score gaps where OSV gives vectors only.
 - [ ] GHSA as a separate source (currently merged into OSV) to enable
-      source-diff view
-- [ ] ExploitDB / Metasploit / Nuclei template mapping per CVE
-- [ ] RSS / Atom feeds (per ecosystem, per severity)
-- [ ] CLI: `vulnscope check package.json` — ingest your manifest, list CVEs
-- [ ] Read replica + materialized views for `/packages` aggregation
+      source-diff view.
+- [ ] ExploitDB / Metasploit / Nuclei template mapping per CVE.
+- [ ] RSS / Atom feeds (per ecosystem, per severity).
+- [ ] CLI: `vulnscope check package.json` — ingest your manifest, list CVEs.
+- [ ] Read replica + materialized views for `/packages` aggregation.
 
 ## Acknowledgments
 
