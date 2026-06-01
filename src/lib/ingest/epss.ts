@@ -5,6 +5,9 @@ import { Readable } from "node:stream";
 import { createInterface } from "node:readline";
 import { pool } from "@/db/client";
 import { startJob } from "@/lib/sync-jobs";
+import { getMeta, setMeta } from "./meta";
+
+const META_KEY = "epss:score_date";
 
 const URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz";
 // Cloudflare in front of FIRST.org occasionally hangs the gunzip stream
@@ -39,6 +42,8 @@ export async function runEpssIngest(): Promise<{ seen: number; changed: number }
     let header: string[] | null = null;
     let batch: [string, string, string][] = [];
     let scoreDate: string | null = null;
+    let skipRest = false;       // set to true if score_date matches stored
+    const knownScoreDate = await getMeta(META_KEY);
 
     async function flush() {
       if (batch.length === 0) return;
@@ -66,7 +71,17 @@ export async function runEpssIngest(): Promise<{ seen: number; changed: number }
     for await (const line of rl) {
       if (line.startsWith("#")) {
         const m = line.match(/score_date:([^,\s]+)/);
-        if (m) scoreDate = m[1];
+        if (m) {
+          scoreDate = m[1];
+          // Incremental skip: FIRST.org publishes a new score_date once
+          // per day. If we've already ingested this date there's nothing
+          // to do — close the stream so the for-await loop exits.
+          if (knownScoreDate && knownScoreDate === scoreDate) {
+            skipRest = true;
+            rl.close();
+            break;
+          }
+        }
         continue;
       }
       if (!header) {
@@ -79,7 +94,10 @@ export async function runEpssIngest(): Promise<{ seen: number; changed: number }
       processed++;
       if (batch.length >= BATCH) await flush();
     }
-    await flush();
+    if (!skipRest) {
+      await flush();
+      if (scoreDate) await setMeta(META_KEY, scoreDate);
+    }
     await job.finish({ seen: processed, changed: updated, error: null });
     return { seen: processed, changed: updated };
   } catch (err) {

@@ -20,6 +20,7 @@ import {
 } from "@/lib/osv";
 import { baseScoreFromVector } from "@/lib/cvss";
 import { startJob } from "@/lib/sync-jobs";
+import { getMeta, setMeta } from "./meta";
 
 const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
@@ -59,6 +60,9 @@ interface UpsertCtx {
   eco: string;
   ecoMatch: (recordEco: string) => boolean;
   pkgCache: Map<string, number>;
+  /** cve_id → previously-known modified_at (epoch ms). Used to skip
+   *  records whose upstream `modified` hasn't advanced. */
+  knownModified: Map<string, number>;
 }
 
 async function getOrCreatePackageId(ctx: UpsertCtx, name: string): Promise<number> {
@@ -90,6 +94,12 @@ async function processRecord(ctx: UpsertCtx, rec: OsvRecord): Promise<boolean> {
   if (!cveId) return false;
   const publishedAt = parseDate(rec.published);
   const modifiedAt = parseDate(rec.modified);
+  // Per-record incremental skip: if the OSV record's `modified` is no
+  // newer than what we already have, there's nothing to do.
+  if (modifiedAt) {
+    const knownMs = ctx.knownModified.get(cveId);
+    if (knownMs !== undefined && modifiedAt.getTime() <= knownMs) return false;
+  }
 
   await db
     .insert(vulnerabilities)
@@ -170,8 +180,19 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
   const job = await startJob(`osv:${eco}`);
   let seen = 0;
   let imported = 0;
+  const metaKey = `osv:${eco}:last_modified`;
   try {
     const url = `${BASE_URL}/${encodeURIComponent(ecosystem)}/all.zip`;
+    // Zip-level incremental skip: HEAD the GCS object, compare its
+    // Last-Modified header with what we stored last time. A no-change
+    // tick is <1s instead of multi-minute download + decompress.
+    const headRes = await fetch(url, { method: "HEAD" });
+    const upstreamMtime = headRes.headers.get("last-modified");
+    const knownMtime = await getMeta(metaKey);
+    if (upstreamMtime && knownMtime === upstreamMtime) {
+      await job.finish({ seen: 0, changed: 0, error: null });
+      return { seen: 0, changed: 0 };
+    }
     const work = await fs.mkdtemp(join(tmpdir(), "osv-"));
     const zipPath = join(work, "all.zip");
     const extractDir = join(work, "json");
@@ -181,10 +202,22 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
       await fs.unlink(zipPath).catch(() => {});
       const files = (await fs.readdir(extractDir)).filter((f) => f.endsWith(".json"));
       seen = files.length;
+      // Pre-fetch the modified_at we already have for any CVE so the
+      // per-record skip is a Map lookup, not a SELECT per record.
+      const knownModified = new Map<string, number>();
+      const knownRows = await pool.query<{ cve_id: string; modified_at: Date | null }>(
+        `SELECT v.cve_id, v.modified_at FROM vulnerabilities v
+          WHERE EXISTS (SELECT 1 FROM affected a WHERE a.cve_id = v.cve_id AND a.ecosystem = $1)`,
+        [eco],
+      );
+      for (const r of knownRows.rows) {
+        if (r.modified_at) knownModified.set(r.cve_id, new Date(r.modified_at).getTime());
+      }
       const ctx: UpsertCtx = {
         eco,
         ecoMatch: (recordEco) => canonicalizeEco(recordEco) === eco,
         pkgCache: new Map(),
+        knownModified,
       };
       const limit = pLimit(6);
       const CHUNK = 200;
@@ -215,6 +248,7 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
     } finally {
       await fs.rm(work, { recursive: true, force: true }).catch(() => {});
     }
+    if (upstreamMtime) await setMeta(metaKey, upstreamMtime);
     await job.finish({ seen, changed: imported, error: null });
     return { seen, changed: imported };
   } catch (err) {

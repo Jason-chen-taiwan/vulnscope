@@ -4,6 +4,9 @@ import { sql } from "drizzle-orm";
 import { db, pool } from "@/db/client";
 import { vulnerabilities } from "@/db/schema";
 import { startJob } from "@/lib/sync-jobs";
+import { getMeta, setMeta } from "./meta";
+
+const META_KEY = "kev:catalog_version";
 
 const KEV_URL =
   "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
@@ -35,6 +38,14 @@ export async function runKevIngest(): Promise<{ seen: number; changed: number }>
     if (!res.ok) throw new Error(`KEV fetch failed: ${res.status}`);
     const payload = (await res.json()) as KevPayload;
     seen = payload.vulnerabilities.length;
+    // Incremental skip: CISA bumps catalogVersion only when the list
+    // actually changes. If we've already ingested this version we still
+    // want to record a success row, but we skip the per-entry upserts.
+    const lastVersion = await getMeta(META_KEY);
+    if (lastVersion === payload.catalogVersion) {
+      await job.finish({ seen, changed: 0, error: null });
+      return { seen, changed: 0 };
+    }
     for (const e of payload.vulnerabilities) {
       const addedAt = parseDate(e.dateAdded);
       const r = await db
@@ -59,6 +70,7 @@ export async function runKevIngest(): Promise<{ seen: number; changed: number }>
         .returning({ cveId: vulnerabilities.cveId });
       changed += r.length;
     }
+    await setMeta(META_KEY, payload.catalogVersion);
     await job.finish({ seen, changed, error: null });
     return { seen, changed };
   } catch (err) {
