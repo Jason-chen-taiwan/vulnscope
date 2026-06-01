@@ -21,11 +21,14 @@ jobs:
         with:
           version: 9
 
+      # NOTE: do NOT set `registry-url` here. When set, setup-node writes
+      # an `.npmrc` with `_authToken=${NODE_AUTH_TOKEN}`, and the empty
+      # token in CI defeats OIDC trusted publishing — npm sees a dummy
+      # auth header and 404s instead of falling back to OIDC.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          registry-url: "https://registry.npmjs.org"
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -36,10 +39,19 @@ jobs:
       - name: Build CLI
         run: pnpm --filter vulnscope build
 
+      # npm Trusted Publishing requires npm CLI >= 11.5.1 (Node 22 ships
+      # with npm 10.x). Upgrade just before publish.
+      - name: Upgrade npm to latest (for OIDC support)
+        run: npm install -g npm@latest
+
       # Authenticated via npm Trusted Publishing (OIDC). No long-lived
       # token in GitHub secrets — the `id-token: write` permission above
       # lets npm exchange the GitHub Actions OIDC token for an
       # ephemeral publish credential, scoped to this exact repo + workflow.
+      #
+      # We `cd cli` and use `npm publish` directly (not `pnpm publish`)
+      # because OIDC trusted publishing is implemented in the npm CLI,
+      # not pnpm.
       #
       # Setup once on npmjs.com:
       #   Package → Settings → Publishing access → Add trusted publisher
@@ -48,4 +60,5 @@ jobs:
       #   Workflow filename: release-cli.yml
       #   Environment: (leave blank)
       - name: Publish to npm
-        run: pnpm --filter vulnscope publish --no-git-checks --access public --provenance
+        working-directory: cli
+        run: npm publish --access public --provenance
