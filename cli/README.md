@@ -1,5 +1,9 @@
 # vulnscope
 
+[![npm version](https://img.shields.io/npm/v/vulnscope.svg)](https://www.npmjs.com/package/vulnscope)
+[![npm downloads](https://img.shields.io/npm/dm/vulnscope.svg)](https://www.npmjs.com/package/vulnscope)
+[![license](https://img.shields.io/npm/l/vulnscope.svg)](https://github.com/Jason-chen-taiwan/vulnscope/blob/main/LICENSE)
+
 Scan your lockfile for known CVEs, with **CISA KEV** and **FIRST EPSS**
 overlays baked in. Powered by the [VulnScope](https://github.com/Jason-chen-taiwan/vulnscope)
 project; uses its hosted API by default so there's nothing to install
