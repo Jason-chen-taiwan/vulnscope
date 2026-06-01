@@ -135,6 +135,21 @@ export async function tick(opts?: { manual?: boolean }): Promise<void> {
     `INSERT INTO sync_jobs (source, status) VALUES ('refresh', 'running') RETURNING id`,
   );
   const refreshJobId = rows[0].id as number;
+  // Defense-in-depth: even if every individual ingest's timeout fails,
+  // the whole refresh is bounded so the in-flight flag and sync_jobs row
+  // are always reset. 3 hours is well above the longest legitimate run
+  // (~2 hours for Debian + npm under load).
+  const REFRESH_HARD_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+  let watchdog: NodeJS.Timeout | null = setTimeout(() => {
+    console.error(`[scheduler] refresh exceeded ${REFRESH_HARD_TIMEOUT_MS / 1000}s — releasing in-flight flag`);
+    globalThis.__vulnscope_refresh_in_flight = false;
+    pool.query(
+      `UPDATE sync_jobs SET finished_at=now(), status='failed',
+                            error_message='watchdog: orchestrator exceeded hard timeout'
+        WHERE id=$1 AND status='running'`,
+      [refreshJobId],
+    ).catch(() => {});
+  }, REFRESH_HARD_TIMEOUT_MS);
   try {
     const r = await runFullRefresh();
     const failed = r.steps.filter((s) => !s.ok);
@@ -166,6 +181,8 @@ export async function tick(opts?: { manual?: boolean }): Promise<void> {
       [refreshJobId, (e as Error).message],
     );
   } finally {
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = null;
     globalThis.__vulnscope_refresh_in_flight = false;
   }
 }
