@@ -60,9 +60,6 @@ interface UpsertCtx {
   eco: string;
   ecoMatch: (recordEco: string) => boolean;
   pkgCache: Map<string, number>;
-  /** cve_id → previously-known modified_at (epoch ms). Used to skip
-   *  records whose upstream `modified` hasn't advanced. */
-  knownModified: Map<string, number>;
 }
 
 async function getOrCreatePackageId(ctx: UpsertCtx, name: string): Promise<number> {
@@ -94,11 +91,21 @@ async function processRecord(ctx: UpsertCtx, rec: OsvRecord): Promise<boolean> {
   if (!cveId) return false;
   const publishedAt = parseDate(rec.published);
   const modifiedAt = parseDate(rec.modified);
-  // Per-record incremental skip: if the OSV record's `modified` is no
-  // newer than what we already have, there's nothing to do.
+
+  // Per-record incremental skip done at the SQL layer using a cheap
+  // indexed lookup: if the existing row's modified_at >= this record's,
+  // skip the entire write. We avoid loading an in-memory Map for the
+  // whole DB (which previously OOM'd the app when the table grew past
+  // ~50k rows).
   if (modifiedAt) {
-    const knownMs = ctx.knownModified.get(cveId);
-    if (knownMs !== undefined && modifiedAt.getTime() <= knownMs) return false;
+    const existing = await pool.query<{ modified_at: Date | null }>(
+      `SELECT modified_at FROM vulnerabilities WHERE cve_id = $1`,
+      [cveId],
+    );
+    if (existing.rows.length > 0) {
+      const known = existing.rows[0].modified_at;
+      if (known && new Date(known).getTime() >= modifiedAt.getTime()) return false;
+    }
   }
 
   await db
@@ -202,30 +209,18 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
       await fs.unlink(zipPath).catch(() => {});
       const files = (await fs.readdir(extractDir)).filter((f) => f.endsWith(".json"));
       seen = files.length;
-      // Pre-fetch modified_at we already have so per-record skip is a
-      // Map lookup, not a SELECT per record. Use DISTINCT JOIN (uses the
-      // affected.ecosystem + cve_id indexes) — the EXISTS-subquery form
-      // we had before caused a sequential scan on vulnerabilities and
-      // would saturate the 256MB Postgres machine.
-      const knownModified = new Map<string, number>();
-      const knownRows = await pool.query<{ cve_id: string; modified_at: Date | null }>(
-        `SELECT DISTINCT v.cve_id, v.modified_at
-           FROM affected a
-           JOIN vulnerabilities v ON v.cve_id = a.cve_id
-          WHERE a.ecosystem = $1`,
-        [eco],
-      );
-      for (const r of knownRows.rows) {
-        if (r.modified_at) knownModified.set(r.cve_id, new Date(r.modified_at).getTime());
-      }
       const ctx: UpsertCtx = {
         eco,
         ecoMatch: (recordEco) => canonicalizeEco(recordEco) === eco,
         pkgCache: new Map(),
-        knownModified,
       };
-      const limit = pLimit(6);
-      const CHUNK = 200;
+      // Concurrency 3 (down from 6) and chunk 100 (down from 200) bound
+      // peak Node heap: each in-flight record holds the file string +
+      // the parsed object + zod's intermediate value, which adds up fast
+      // on the 220k-record npm zip. The chunk boundary is also a
+      // microtask yield where V8 gets to reap.
+      const limit = pLimit(3);
+      const CHUNK = 100;
       let processed = 0;
       for (let off = 0; off < files.length; off += CHUNK) {
         const slice = files.slice(off, off + CHUNK);
@@ -249,6 +244,10 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
         // these updates internally so we don't flood the DB.
         job.progress({ seen: processed, changed: imported });
         if (ctx.pkgCache.size > 50000) ctx.pkgCache.clear();
+        // Yield to the event loop so V8 can reap the chunk's parsed
+        // OSV records before we load the next batch. Critical on small
+        // app machines — without this we OOM on the 220k-record zip.
+        await new Promise((r) => setImmediate(r));
       }
     } finally {
       await fs.rm(work, { recursive: true, force: true }).catch(() => {});
