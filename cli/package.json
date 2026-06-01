@@ -1,0 +1,40 @@
+{
+  "name": "vulnscope",
+  "version": "0.1.0",
+  "description": "Scan lockfiles for known CVEs using the VulnScope database (OSV + KEV + EPSS).",
+  "keywords": ["cve", "vulnerability", "security", "osv", "npm-audit", "lockfile", "kev", "epss"],
+  "homepage": "https://vulnscope-tw.fly.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jason-chen-taiwan/vulnscope.git",
+    "directory": "cli"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "vulnscope": "./dist/index.js"
+  },
+  "files": ["dist", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node node_modules/tsup/dist/cli-default.js src/index.ts --format esm --target node18 --clean --no-splitting",
+    "dev": "node node_modules/tsup/dist/cli-default.js src/index.ts --format esm --target node18 --watch",
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "test:watch": "node node_modules/vitest/vitest.mjs",
+    "typecheck": "node ../node_modules/typescript/bin/tsc --noEmit",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  }
+}

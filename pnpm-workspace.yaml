@@ -1,5 +1,14 @@
 packages:
   - .
+  - cli
+
+allowBuilds:
+  '@parcel/watcher': set this to true or false
+  '@swc/core': set this to true or false
+  core-js-pure: set this to true or false
+  esbuild: set this to true or false
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
 
 # Approve all transitive deps that ship native postinstall scripts.
 # pnpm 11 refuses to run unapproved postinstall scripts and exits 1 in

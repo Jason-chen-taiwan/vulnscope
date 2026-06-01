@@ -182,6 +182,36 @@ opt-in env vars (`NEXT_PUBLIC_ADS_ENABLED`, `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`,
 build. The codebase is 100% open source under MIT — see `.env.example`
 for every available knob.
 
+## CLI: `npx vulnscope check`
+
+A companion command-line tool that scans your lockfile against this
+database. Lives in [`cli/`](./cli) as its own npm package.
+
+```bash
+npx vulnscope check                       # auto-detect lockfile
+npx vulnscope check ./pnpm-lock.yaml      # explicit path
+npx vulnscope check --severity CRITICAL,HIGH --json
+```
+
+Supports `package-lock.json` (npm v2/v3) and `pnpm-lock.yaml` (v9).
+Calls the hosted batch endpoint
+(`POST /api/v1/packages/check-batch`) so 100s of packages check in one
+round-trip. Exits 1 on findings (overridable with `--exit-zero`) so it
+drops straight into CI. See [`cli/README.md`](./cli/README.md) for the
+full flag list.
+
+Both packages live in one pnpm workspace:
+
+```
+.
+├── src/                  ← Next.js web app (@vulnscope/web)
+├── cli/                  ← npm package `vulnscope`
+└── pnpm-workspace.yaml
+```
+
+The web app is the backend; the CLI is a pure HTTP client (no DB
+coupling). They version independently.
+
 ## Insights pages
 
 `/insights/...` are auto-generated content pages from the database:
@@ -302,6 +332,8 @@ SaaS. PRs welcome.
 - [x] Incremental ingest (KEV catalogVersion, OSV Last-Modified +
       per-record `modified`, EPSS score_date) — done; see "Incremental
       ingest" above.
+- [x] CLI: `vulnscope check package.json` — done; see [`cli/`](./cli)
+      (npm + pnpm lockfiles; Yarn / Python / Go on the way).
 - [ ] OSV per-record-changed feed — currently we still download the full
       zip per ecosystem (zips update hourly upstream) and rely on the
       per-record `modified` to skip writes. A `firstSeen.json`-style
@@ -311,7 +343,8 @@ SaaS. PRs welcome.
       source-diff view.
 - [ ] ExploitDB / Metasploit / Nuclei template mapping per CVE.
 - [ ] RSS / Atom feeds (per ecosystem, per severity).
-- [ ] CLI: `vulnscope check package.json` — ingest your manifest, list CVEs.
+- [ ] CLI Phase 2: Yarn / Bun lockfiles, Python (`requirements.txt`,
+      `poetry.lock`), Go (`go.sum`).
 - [ ] Read replica + materialized views for `/packages` aggregation.
 
 ## Acknowledgments

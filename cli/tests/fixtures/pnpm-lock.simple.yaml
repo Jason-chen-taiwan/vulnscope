@@ -1,0 +1,38 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+  .:
+    dependencies:
+      lodash:
+        specifier: ^4.17.20
+        version: 4.17.20
+      express:
+        specifier: ^4.18.0
+        version: 4.18.0
+      '@scope/pkg':
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  lodash@4.17.20:
+    resolution: {integrity: sha512-xxx}
+
+  express@4.18.0:
+    resolution: {integrity: sha512-xxx}
+
+  '@scope/pkg@1.0.0':
+    resolution: {integrity: sha512-xxx}
+
+  react-dom@19.0.0(react@19.0.0):
+    resolution: {integrity: sha512-xxx}
+
+  '@types/node@22.10.0':
+    resolution: {integrity: sha512-xxx}
+
+  some-pkg@1.0.0(peer-a@1.0.0)(peer-b@2.0.0):
+    resolution: {integrity: sha512-xxx}

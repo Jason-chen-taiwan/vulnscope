@@ -1,0 +1,42 @@
+name: Release CLI
+
+# Triggered by tags like cli-v0.1.0 / cli-v1.2.3. Publishes the
+# `vulnscope` package to npm. The tag form keeps web-app releases
+# (which use a different tag scheme or none) cleanly separated.
+on:
+  push:
+    tags:
+      - "cli-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # for npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Test CLI
+        run: pnpm --filter vulnscope test
+
+      - name: Build CLI
+        run: pnpm --filter vulnscope build
+
+      - name: Publish to npm
+        run: pnpm --filter vulnscope publish --no-git-checks --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -23,8 +23,13 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
+      - name: Typecheck (web)
         run: pnpm exec tsc --noEmit
 
-      - name: Test
-        run: pnpm test
+      - name: Typecheck (cli)
+        run: pnpm --filter vulnscope exec tsc --noEmit
+
+      - name: Test (all packages)
+        # -r runs `test` in every workspace package. Web app + CLI both
+        # define one, so this single command covers everything.
+        run: pnpm -r test
