@@ -2,6 +2,7 @@ import "server-only";
 import { runKevIngest } from "./kev";
 import { runOsvIngest } from "./osv";
 import { runEpssIngest } from "./epss";
+import { runNvdIngest } from "./nvd";
 
 const ALL_ECOSYSTEMS = [
   "npm",
@@ -72,6 +73,11 @@ export async function runFullRefresh(options?: {
     }
   }
   await attempt("epss", runEpssIngest);
+  // NVD backfill runs last. It only touches CVEs that have no CVSS
+  // score after OSV ingest, capped at 500/run to respect NVD's 5-req-
+  // per-30-second anonymous quota (~55 min worst case). Even if this
+  // hits the cap, the next refresh continues filling.
+  await attempt("nvd", runNvdIngest);
 
   const finishedAt = new Date();
   return {
