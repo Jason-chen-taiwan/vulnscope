@@ -2,7 +2,10 @@ import { searchVulns } from "@/lib/queries";
 import { renderRss } from "@/lib/rss";
 
 // Feeds are unauthenticated and built from a single indexed query —
-// cache hard (10 min) to absorb any feed-reader storm.
+// cache hard (10 min) to absorb any feed-reader storm. force-dynamic
+// is required because Next would otherwise try to prerender this at
+// build time, when the DB isn't reachable from the Docker builder.
+export const dynamic = "force-dynamic";
 export const revalidate = 600;
 
 export async function GET() {
