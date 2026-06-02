@@ -10,4 +10,4 @@ export interface Pkg {
   version: string;
 }
 
-export type LockfileKind = "npm" | "pnpm";
+export type LockfileKind = "npm" | "pnpm" | "yarn" | "yarn-berry" | "requirements" | "poetry";

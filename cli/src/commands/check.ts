@@ -54,6 +54,9 @@ export async function runCheck(args: CheckArgs, io: IO = defaultIO): Promise<Exi
     io.out(
       dim(color, `Scanning ${loaded.packages.length} packages from ${loaded.path}...`),
     );
+    if (loaded.warning) {
+      io.out(dim(color, `  note: ${loaded.warning}`));
+    }
   }
 
   // 2. POST batch(es).

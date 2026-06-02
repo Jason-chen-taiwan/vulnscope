@@ -70,13 +70,20 @@ vulnscope check --exit-zero
 The split between **1** and **2** lets CI tell "the tool ran but found
 real CVEs" apart from "the tool itself broke."
 
-## Supported lockfiles (v0.1)
+## Supported lockfiles
 
 - `package-lock.json` (npm, lockfileVersion 2 or 3)
 - `pnpm-lock.yaml` (v9)
+- `yarn.lock` (Yarn v1 and Berry / v2+ — auto-detected)
+- `requirements.txt` (pip; only `==` pinned versions checked)
+- `poetry.lock` (Poetry)
 
-Yarn, Bun, Python, Go, Rust etc. are on the roadmap — open an issue
+Bun, Go (`go.sum`), Rust (`Cargo.lock`) on the roadmap — open an issue
 or PR for what you need next.
+
+When multiple lockfiles coexist in the same directory the priority is
+**poetry.lock → requirements.txt → pnpm → yarn → npm**, matching what
+`<tool> install` would actually consume.
 
 ## Example output
 

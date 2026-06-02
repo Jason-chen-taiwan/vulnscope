@@ -1,6 +1,6 @@
 {
   "name": "vulnscope",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Scan lockfiles for known CVEs using the VulnScope database (OSV + KEV + EPSS).",
   "keywords": ["cve", "vulnerability", "security", "osv", "npm-audit", "lockfile", "kev", "epss"],
   "homepage": "https://vulnscope-tw.fly.dev",

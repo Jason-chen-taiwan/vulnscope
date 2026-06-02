@@ -39,10 +39,13 @@ describe("kindFromPath", () => {
     expect(kindFromPath("/foo/package-lock.json")).toBe("npm");
     expect(kindFromPath("/foo/pnpm-lock.yaml")).toBe("pnpm");
     expect(kindFromPath("/foo/npm-shrinkwrap.json")).toBe("npm");
+    expect(kindFromPath("/foo/yarn.lock")).toBe("yarn");
+    expect(kindFromPath("/foo/requirements.txt")).toBe("requirements");
+    expect(kindFromPath("/foo/poetry.lock")).toBe("poetry");
   });
   it("returns null for unknown filenames", () => {
-    expect(kindFromPath("/foo/yarn.lock")).toBeNull();
     expect(kindFromPath("/foo/bun.lockb")).toBeNull();
+    expect(kindFromPath("/foo/Cargo.lock")).toBeNull();
   });
 });
 
