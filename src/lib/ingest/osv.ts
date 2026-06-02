@@ -21,6 +21,31 @@ import {
 import { baseScoreFromVector } from "@/lib/cvss";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
+import { ensureIngestSchema } from "./ensure-schema";
+
+/**
+ * Classify a non-CVE identifier into a source tag so the UI can group
+ * by ecosystem advisory provider. The set is small and well-known —
+ * everything we don't recognise falls into "other" rather than being
+ * dropped (we want to surface unknowns, not silently lose data).
+ */
+function classifyAlias(alias: string): string {
+  const a = alias.toUpperCase();
+  if (a.startsWith("GHSA-")) return "ghsa";
+  if (a.startsWith("DSA-")) return "dsa";
+  if (a.startsWith("DLA-")) return "dla";
+  if (a.startsWith("DEBIAN-")) return "debian";
+  if (a.startsWith("ALPINE-")) return "alpine";
+  if (a.startsWith("RHSA-")) return "rhsa";
+  if (a.startsWith("USN-")) return "usn"; // Ubuntu
+  if (a.startsWith("GLSA-")) return "glsa"; // Gentoo
+  if (a.startsWith("SUSE-")) return "suse";
+  if (a.startsWith("PYSEC-")) return "pysec";
+  if (a.startsWith("RUSTSEC-")) return "rustsec";
+  if (a.startsWith("GO-")) return "goadvisory";
+  if (a.startsWith("OSV-")) return "osv-id";
+  return "other";
+}
 
 const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
@@ -108,6 +133,23 @@ async function processRecord(ctx: UpsertCtx, rec: OsvRecord): Promise<boolean> {
     }
   }
 
+  // Collect every non-CVE identifier that points at this vuln. The OSV
+  // record id itself is included when it isn't the CVE we resolved to
+  // (so GHSA-... and ALPINE-... main IDs become searchable aliases).
+  const aliasSet = new Set<string>();
+  if (rec.id && !/^CVE-\d{4}-\d+$/i.test(rec.id) && rec.id !== cveId) {
+    aliasSet.add(rec.id);
+  }
+  for (const a of rec.aliases ?? []) {
+    if (a && !/^CVE-\d{4}-\d+$/i.test(a) && a !== cveId) aliasSet.add(a);
+  }
+  for (const u of rec.upstream ?? []) {
+    if (u && !/^CVE-\d{4}-\d+$/i.test(u) && u !== cveId) aliasSet.add(u);
+  }
+  for (const r of rec.related ?? []) {
+    if (r && !/^CVE-\d{4}-\d+$/i.test(r) && r !== cveId) aliasSet.add(r);
+  }
+
   await db
     .insert(vulnerabilities)
     .values({
@@ -179,11 +221,28 @@ async function processRecord(ctx: UpsertCtx, rec: OsvRecord): Promise<boolean> {
       .values({ cveId, url: r.url, type: refTypeFromOsv(r.type) })
       .onConflictDoNothing({ target: [refs.cveId, refs.url] });
   }
+
+  // Persist every non-CVE alias as a queryable identifier. ON CONFLICT
+  // covers the case where the same alias appears in multiple records
+  // (e.g. GHSA-... can show up in both the GHSA-prefixed OSV record
+  // and a related ALPINE-... record); whichever we see first wins.
+  // Cross-CVE conflicts (uq_vuln_aliases_alias) are skipped silently —
+  // OSV's own data is occasionally inconsistent and we don't want a
+  // single malformed alias to abort an entire record write.
+  for (const alias of aliasSet) {
+    await pool.query(
+      `INSERT INTO vuln_aliases (cve_id, alias, source)
+            VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [cveId, alias, classifyAlias(alias)],
+    );
+  }
   return true;
 }
 
 export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; changed: number }> {
   const eco = canonicalizeEco(ecosystem);
+  await ensureIngestSchema();
   const job = await startJob(`osv:${eco}`);
   let seen = 0;
   let imported = 0;

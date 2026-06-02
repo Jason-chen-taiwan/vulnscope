@@ -105,6 +105,33 @@ export const refs = pgTable(
   }),
 );
 
+/**
+ * GHSA / DSA / ALPINE-... / DLA-... — every non-CVE identifier that
+ * OSV records list under `aliases`, `upstream`, or `related`. Stored
+ * many-to-many because a single CVE can have multiple ecosystem-level
+ * advisories (e.g. CVE-2021-44228 → GHSA-jfh8-c2jp-5v3q + DSA-5020-1
+ * + ALPINE-CVE-2021-44228 + ...).
+ *
+ * `source` distinguishes which feed produced the row so the UI can
+ * filter ("show GHSA only") and the source-diff view can render
+ * GHSA-vs-NVD discrepancies cleanly.
+ */
+export const vulnAliases = pgTable(
+  "vuln_aliases",
+  {
+    cveId: text("cve_id")
+      .notNull()
+      .references(() => vulnerabilities.cveId, { onDelete: "cascade" }),
+    alias: text("alias").notNull(),
+    source: text("source").notNull(), // 'ghsa' | 'dsa' | 'alpine' | 'related' | 'osv-id' etc.
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.cveId, t.alias] }),
+    aliasIdx: uniqueIndex("uq_vuln_aliases_alias").on(t.alias),
+    cveIdx: index("idx_vuln_aliases_cve").on(t.cveId),
+  }),
+);
+
 export const metaKv = pgTable("meta_kv", {
   key: text("key").primaryKey(),
   value: text("value"),
@@ -137,3 +164,4 @@ export type CvssScore = typeof cvssScores.$inferSelect;
 export type Package = typeof packages.$inferSelect;
 export type Affected = typeof affected.$inferSelect;
 export type Ref = typeof refs.$inferSelect;
+export type VulnAlias = typeof vulnAliases.$inferSelect;

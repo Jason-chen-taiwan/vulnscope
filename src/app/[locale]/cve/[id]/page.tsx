@@ -2,11 +2,33 @@ import type { Metadata } from "next";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { notFound } from "next/navigation";
-import { getCveBundle, getCveById } from "@/lib/queries";
+import { getCveBundle, getCveById, resolveToCveId } from "@/lib/queries";
+import { redirect } from "next/navigation";
 import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
 import { describeRange } from "@/lib/version-match";
 import type { OsvRange } from "@/lib/osv";
+
+/**
+ * Best-effort external URL for an advisory alias. We only link to
+ * sources where the URL scheme is stable and deterministic — others
+ * (DLA, USN with date-suffix) don't round-trip cleanly so we just
+ * display them without a link.
+ */
+function aliasExternalUrl(alias: string, source: string): string | null {
+  switch (source) {
+    case "ghsa":
+      return `https://github.com/advisories/${alias}`;
+    case "dsa":
+      return `https://security-tracker.debian.org/tracker/${alias}`;
+    case "rhsa":
+      return `https://access.redhat.com/errata/${alias}`;
+    case "usn":
+      return `https://ubuntu.com/security/notices/${alias}`;
+    default:
+      return null;
+  }
+}
 
 export const dynamic = "force-dynamic";
 
@@ -40,9 +62,17 @@ export default async function CvePage({
   setRequestLocale(locale);
   const t = await getTranslations({ locale, namespace: "Cve" });
   const dateLocale = locale === "zh" ? "zh-TW" : "en";
-  const cveId = decodeURIComponent(id).toUpperCase();
-  if (!/^CVE-\d{4}-\d+$/.test(cveId)) notFound();
+  const raw = decodeURIComponent(id);
 
+  // Non-CVE identifier (GHSA, DSA, ALPINE, ...): resolve to canonical
+  // CVE and 301 there. Keeps URLs canonical and lets bookmarks survive.
+  if (!/^CVE-\d{4}-\d+$/i.test(raw)) {
+    const resolved = await resolveToCveId(raw);
+    if (resolved) redirect(`/${locale}/cve/${resolved}`);
+    notFound();
+  }
+
+  const cveId = raw.toUpperCase();
   const bundle = await getCveBundle(cveId);
   if (!bundle) {
     return (
@@ -61,7 +91,13 @@ export default async function CvePage({
     );
   }
 
-  const { vuln, scores, affected, refs } = bundle;
+  const { vuln, scores, affected, refs, aliases } = bundle as {
+    vuln: typeof bundle.vuln;
+    scores: typeof bundle.scores;
+    affected: typeof bundle.affected;
+    refs: typeof bundle.refs;
+    aliases: { alias: string; source: string }[];
+  };
   const topScore = scores.find((s: { base_score: number | null }) => s.base_score !== null);
 
   return (
@@ -83,6 +119,32 @@ export default async function CvePage({
             </span>
           )}
         </div>
+        {aliases.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-xs pt-1">
+            <span className="text-[hsl(var(--muted-foreground))]">{t("alsoKnownAs")}</span>
+            {aliases.map((a) => {
+              const href = aliasExternalUrl(a.alias, a.source);
+              const className =
+                "font-mono rounded border border-[hsl(var(--border))] px-1.5 py-0.5";
+              return href ? (
+                <a
+                  key={a.alias}
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className={`${className} hover:bg-[hsl(var(--muted))] underline-offset-2 hover:underline`}
+                  title={a.source.toUpperCase()}
+                >
+                  {a.alias}
+                </a>
+              ) : (
+                <span key={a.alias} className={className} title={a.source.toUpperCase()}>
+                  {a.alias}
+                </span>
+              );
+            })}
+          </div>
+        )}
       </header>
 
       {vuln.description && (

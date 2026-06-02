@@ -70,7 +70,8 @@
     "severityCol": "Severity",
     "vector": "Vector",
     "references": "References ({n})",
-    "moreRefs": "… {n} more"
+    "moreRefs": "… {n} more",
+    "alsoKnownAs": "Also known as:"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {No CVEs} =1 {1 total CVE} other {# total CVEs}}",
@@ -114,7 +115,14 @@
     "topPackages": {
       "title": "Most-vulnerable packages of all time",
       "blurb": "Packages with the largest number of distinct CVEs across all ingested ecosystems.",
-      "col": { "rank": "#", "package": "Package", "ecosystem": "Ecosystem", "cves": "CVEs", "kev": "KEV", "epssMax": "Max EPSS" }
+      "col": {
+        "rank": "#",
+        "package": "Package",
+        "ecosystem": "Ecosystem",
+        "cves": "CVEs",
+        "kev": "KEV",
+        "epssMax": "Max EPSS"
+      }
     },
     "kevCatalog": {
       "title": "Every CVE on the CISA KEV catalog",

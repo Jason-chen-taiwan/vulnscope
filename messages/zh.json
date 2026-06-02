@@ -70,7 +70,8 @@
     "severityCol": "嚴重程度",
     "vector": "向量",
     "references": "參考連結({n})",
-    "moreRefs": "… 另有 {n} 筆"
+    "moreRefs": "… 另有 {n} 筆",
+    "alsoKnownAs": "也稱為:"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {沒有 CVE} other {共 # 筆 CVE}}",
@@ -114,7 +115,14 @@
     "topPackages": {
       "title": "歷年漏洞最多的套件",
       "blurb": "所有已收錄生態系中,CVE 數量最多的套件。",
-      "col": { "rank": "#", "package": "套件", "ecosystem": "生態系", "cves": "CVE 數", "kev": "KEV", "epssMax": "最高 EPSS" }
+      "col": {
+        "rank": "#",
+        "package": "套件",
+        "ecosystem": "生態系",
+        "cves": "CVE 數",
+        "kev": "KEV",
+        "epssMax": "最高 EPSS"
+      }
     },
     "kevCatalog": {
       "title": "所有 CISA KEV 收錄的 CVE",

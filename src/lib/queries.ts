@@ -36,28 +36,69 @@ export async function getCveById(cveId: string): Promise<VulnRow | null> {
   return rows[0] ?? null;
 }
 
+/**
+ * Resolve any identifier (CVE-..., GHSA-..., DSA-..., ALPINE-..., etc.)
+ * back to a canonical CVE id. Returns null if nothing matches — callers
+ * should map that to a 404. The `vuln_aliases` table provides O(1)
+ * lookup via the unique index on alias.
+ */
+export async function resolveToCveId(id: string): Promise<string | null> {
+  const trimmed = id.trim();
+  if (!trimmed) return null;
+  // Fast path: it's already a CVE.
+  if (/^CVE-\d{4}-\d+$/i.test(trimmed)) {
+    const { rows } = await pool.query(
+      `SELECT cve_id FROM vulnerabilities WHERE cve_id = $1`,
+      [trimmed.toUpperCase()],
+    );
+    return rows[0]?.cve_id ?? null;
+  }
+  // Alias lookup — case-sensitive because GHSA/DSA identifiers are
+  // case-sensitive in their canonical form.
+  const { rows } = await pool.query(
+    `SELECT cve_id FROM vuln_aliases WHERE alias = $1 LIMIT 1`,
+    [trimmed],
+  );
+  return rows[0]?.cve_id ?? null;
+}
+
 export async function getCveBundle(cveId: string) {
   const v = await getCveById(cveId);
   if (!v) return null;
-  const [{ rows: scores }, { rows: aff }, { rows: refs }] = await Promise.all([
-    pool.query(
-      `SELECT version, vector, base_score::float8 AS base_score, severity, source
-         FROM cvss_scores WHERE cve_id = $1 ORDER BY version DESC, source`,
-      [cveId],
-    ),
-    pool.query(
-      `SELECT a.ecosystem, p.name, a.ranges_json, a.versions_json
-         FROM affected a JOIN packages p ON p.id = a.package_id
-         WHERE a.cve_id = $1
-         ORDER BY a.ecosystem, p.name`,
-      [cveId],
-    ),
-    pool.query(
-      `SELECT url, type FROM refs WHERE cve_id = $1 ORDER BY type, url`,
-      [cveId],
-    ),
-  ]);
-  return { vuln: v, scores, affected: aff, refs };
+  const [{ rows: scores }, { rows: aff }, { rows: refs }, { rows: aliases }] =
+    await Promise.all([
+      pool.query(
+        `SELECT version, vector, base_score::float8 AS base_score, severity, source
+           FROM cvss_scores WHERE cve_id = $1 ORDER BY version DESC, source`,
+        [cveId],
+      ),
+      pool.query(
+        `SELECT a.ecosystem, p.name, a.ranges_json, a.versions_json
+           FROM affected a JOIN packages p ON p.id = a.package_id
+           WHERE a.cve_id = $1
+           ORDER BY a.ecosystem, p.name`,
+        [cveId],
+      ),
+      pool.query(
+        `SELECT url, type FROM refs WHERE cve_id = $1 ORDER BY type, url`,
+        [cveId],
+      ),
+      // Aliases table won't exist on a stale DB; tolerate the error and
+      // return [] so the page still renders. ensure-schema fixes this
+      // on the next ingest run.
+      pool
+        .query(
+          `SELECT alias, source FROM vuln_aliases WHERE cve_id = $1
+            ORDER BY CASE source
+              WHEN 'ghsa' THEN 0 WHEN 'rhsa' THEN 1
+              WHEN 'dsa'  THEN 2 WHEN 'usn'  THEN 3
+              WHEN 'alpine' THEN 4 ELSE 9 END,
+              alias`,
+          [cveId],
+        )
+        .catch(() => ({ rows: [] as { alias: string; source: string }[] })),
+    ]);
+  return { vuln: v, scores, affected: aff, refs, aliases };
 }
 
 export interface SearchFilter {
