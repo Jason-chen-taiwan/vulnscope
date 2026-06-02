@@ -38,6 +38,15 @@ export async function generateMetadata({
       title: "VulnScope",
       description: t("description"),
     },
+    alternates: {
+      types: {
+        "application/rss+xml": [
+          { url: "/feed/all.xml", title: "VulnScope — all CVEs" },
+          { url: "/feed/severity/kev", title: "VulnScope — KEV catalog" },
+          { url: "/feed/severity/high", title: "VulnScope — HIGH+ severity" },
+        ],
+      },
+    },
   };
 }
 
