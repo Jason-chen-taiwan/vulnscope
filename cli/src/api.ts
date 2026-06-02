@@ -14,6 +14,9 @@ export interface AffectedCve {
   epss_score: number | null;
   fixed_in: string | null;
   summary: string | null;
+  /** Server 0.3+ : count of public exploits/PoCs (Metasploit, Exploit-DB,
+   *  Nuclei, GitHub). Optional because older servers don't return it. */
+  exploits_count?: number;
 }
 
 export interface VersionCheckResult {

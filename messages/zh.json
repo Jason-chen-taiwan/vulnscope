@@ -71,7 +71,9 @@
     "vector": "向量",
     "references": "參考連結({n})",
     "moreRefs": "… 另有 {n} 筆",
-    "alsoKnownAs": "也稱為:"
+    "alsoKnownAs": "也稱為:",
+    "exploitsAvailable": "公開可利用程式 ({n})",
+    "moreExploits": "+{n} 個更多"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {沒有 CVE} other {共 # 筆 CVE}}",

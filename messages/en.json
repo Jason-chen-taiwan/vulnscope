@@ -71,7 +71,9 @@
     "vector": "Vector",
     "references": "References ({n})",
     "moreRefs": "… {n} more",
-    "alsoKnownAs": "Also known as:"
+    "alsoKnownAs": "Also known as:",
+    "exploitsAvailable": "Public exploits ({n})",
+    "moreExploits": "+{n} more"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {No CVEs} =1 {1 total CVE} other {# total CVEs}}",

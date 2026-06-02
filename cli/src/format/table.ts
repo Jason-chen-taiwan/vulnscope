@@ -14,6 +14,7 @@ interface Row {
   installed: string;
   fixed: string;
   kev: string;
+  exploits: string;
   epss: string;
   summary: string;
 }
@@ -46,6 +47,7 @@ function collectRows(results: VersionCheckResult[], opts: TableOptions): Row[] {
         installed: r.version,
         fixed: c.fixed_in ?? "—",
         kev: c.kev ? "⚠ KEV" : "",
+        exploits: c.exploits_count ? `✗ ${c.exploits_count}` : "",
         epss: formatEpss(c.epss_score),
         summary: truncate(c.summary, 60),
       });
@@ -69,7 +71,7 @@ function truncate(s: string | null, max: number): string {
 }
 
 function renderAscii(rows: Row[], color: boolean): string {
-  const headers = ["Severity", "CVE", "Package", "Installed", "Fixed", "KEV", "EPSS", "Summary"];
+  const headers = ["Severity", "CVE", "Package", "Installed", "Fixed", "KEV", "Exploit", "EPSS", "Summary"];
   const widths = headers.map((h, i) =>
     Math.max(h.length, ...rows.map((r) => Object.values(r)[i]?.length ?? 0)),
   );
@@ -81,7 +83,9 @@ function renderAscii(rows: Row[], color: boolean): string {
   lines.push(fmt(headers, color ? pc.dim : undefined));
   lines.push(widths.map((w) => "─".repeat(w)).join(sep));
   for (const r of rows) {
-    const cells = [r.severity, r.cve, r.pkg, r.installed, r.fixed, r.kev, r.epss, r.summary];
+    const cells = [
+      r.severity, r.cve, r.pkg, r.installed, r.fixed, r.kev, r.exploits, r.epss, r.summary,
+    ];
     if (!color) {
       lines.push(fmt(cells));
       continue;
@@ -92,7 +96,8 @@ function renderAscii(rows: Row[], color: boolean): string {
         .map((c, i) => {
           const padded = c.padEnd(widths[i]);
           if (i === 0) return painter(padded);
-          if (i === 5 && c) return pc.red(padded);
+          if (i === 5 && c) return pc.red(padded); // KEV
+          if (i === 6 && c) return pc.red(pc.bold(padded)); // Exploit count
           return padded;
         })
         .join(sep),

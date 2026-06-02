@@ -98,7 +98,21 @@ export async function getCveBundle(cveId: string) {
         )
         .catch(() => ({ rows: [] as { alias: string; source: string }[] })),
     ]);
-  return { vuln: v, scores, affected: aff, refs, aliases };
+  // Exploits join is also done lazily — same self-healing schema
+  // logic, table may not exist on a stale DB.
+  const { rows: exploits } = await pool
+    .query<{ url: string; source: string; description: string | null }>(
+      `SELECT url, source, description FROM exploits WHERE cve_id = $1
+        ORDER BY CASE source
+          WHEN 'metasploit' THEN 0
+          WHEN 'exploit-db' THEN 1
+          WHEN 'nuclei'     THEN 2
+          WHEN 'github'     THEN 3
+          ELSE 9 END, url`,
+      [cveId],
+    )
+    .catch(() => ({ rows: [] as { url: string; source: string; description: string | null }[] }));
+  return { vuln: v, scores, affected: aff, refs, aliases, exploits };
 }
 
 export interface SearchFilter {
@@ -191,6 +205,7 @@ export interface PackageBundle {
     base_score: number | null;
     ranges_json: OsvRange[];
     versions_json: string[] | null;
+    exploits_count: number;
   }>;
 }
 
@@ -205,12 +220,27 @@ export async function getPackageWithCves(
   if (pkgRows.length === 0) return null;
   const pkg = pkgRows[0] as PackageBundle["package"];
 
+  // The exploits subquery uses LEFT JOIN LATERAL with a guard for
+  // tables that may not exist on a stale DB (Postgres errors at parse
+  // time if the table is missing, so we use to_regclass to short-
+  // circuit). exploits_count > 0 is the signal the CLI surfaces as
+  // \"weaponized\" — much stronger than EPSS for prioritization.
+  const exploitsExists =
+    (await pool.query<{ exists: boolean }>(
+      `SELECT to_regclass('public.exploits') IS NOT NULL AS exists`,
+    )).rows[0]?.exists ?? false;
+
+  const exploitsSelectFrag = exploitsExists
+    ? `(SELECT COUNT(*)::int FROM exploits e WHERE e.cve_id = v.cve_id)`
+    : `0`;
+
   const { rows: cves } = await pool.query(
     `
     SELECT v.cve_id, v.summary, v.description, v.kev,
            v.epss_score::float8 AS epss_score,
            cs.severity AS severity, cs.base_score::float8 AS base_score,
-           a.ranges_json, a.versions_json
+           a.ranges_json, a.versions_json,
+           ${exploitsSelectFrag} AS exploits_count
       FROM affected a
       JOIN vulnerabilities v ON v.cve_id = a.cve_id
       LEFT JOIN LATERAL (
@@ -240,6 +270,7 @@ export interface VersionCheckResult {
     epss_score: number | null;
     fixed_in: string | null;
     summary: string | null;
+    exploits_count: number;
   }>;
   recommended_version: string | null;
   /** Set by /check-batch when the package isn't in our DB. The CLI
@@ -268,6 +299,7 @@ export async function checkPackageVersion(
         epss_score: c.epss_score,
         fixed_in: r.fixedIn,
         summary: c.summary,
+        exploits_count: c.exploits_count ?? 0,
       });
       if (r.fixedIn && (smallestFix === null || r.fixedIn < smallestFix)) {
         smallestFix = r.fixedIn;

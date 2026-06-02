@@ -91,12 +91,13 @@ export default async function CvePage({
     );
   }
 
-  const { vuln, scores, affected, refs, aliases } = bundle as {
+  const { vuln, scores, affected, refs, aliases, exploits } = bundle as {
     vuln: typeof bundle.vuln;
     scores: typeof bundle.scores;
     affected: typeof bundle.affected;
     refs: typeof bundle.refs;
     aliases: { alias: string; source: string }[];
+    exploits: { url: string; source: string; description: string | null }[];
   };
   const topScore = scores.find((s: { base_score: number | null }) => s.base_score !== null);
 
@@ -211,6 +212,36 @@ export default async function CvePage({
               ))}
             </tbody>
           </table>
+        </section>
+      )}
+
+      {exploits.length > 0 && (
+        <section>
+          <h2 className="text-sm font-semibold uppercase tracking-wide mb-2 text-[hsl(15,82%,30%)]">
+            {t("exploitsAvailable", { n: exploits.length })}
+          </h2>
+          <ul className="space-y-1 text-sm">
+            {exploits.slice(0, 25).map((e) => (
+              <li key={e.url} className="flex items-baseline gap-2">
+                <span className="text-[10px] uppercase font-mono w-20 shrink-0 text-[hsl(var(--muted-foreground))]">
+                  {e.source}
+                </span>
+                <a
+                  href={e.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="break-all"
+                >
+                  {e.url}
+                </a>
+              </li>
+            ))}
+            {exploits.length > 25 && (
+              <li className="text-xs text-[hsl(var(--muted-foreground))]">
+                {t("moreExploits", { n: exploits.length - 25 })}
+              </li>
+            )}
+          </ul>
         </section>
       )}
 

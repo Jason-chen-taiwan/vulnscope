@@ -3,6 +3,7 @@ import { runKevIngest } from "./kev";
 import { runOsvIngest } from "./osv";
 import { runEpssIngest } from "./epss";
 import { runNvdIngest } from "./nvd";
+import { runExploitsIngest } from "./exploits";
 
 const ALL_ECOSYSTEMS = [
   "npm",
@@ -78,6 +79,10 @@ export async function runFullRefresh(options?: {
   // per-30-second anonymous quota (~55 min worst case). Even if this
   // hits the cap, the next refresh continues filling.
   await attempt("nvd", runNvdIngest);
+  // Exploits backfill: only ~80ms latency per CVE, capped at 400/run.
+  // Worst case ~80s of HTTP work, but in steady state most CVEs are
+  // already mapped and we skip them via the LEFT JOIN filter.
+  await attempt("exploits", runExploitsIngest);
 
   const finishedAt = new Date();
   return {
