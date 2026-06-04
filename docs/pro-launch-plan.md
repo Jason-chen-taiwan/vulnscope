@@ -23,18 +23,22 @@ The bar for "this works" is one human paying once. Not $1k MRR.
 ### Day 1 — Auth + billing scaffolding
 
 - Add Clerk (Google + GitHub OAuth, email magic link as fallback).
-- Add `users` table with `clerk_user_id`, `stripe_customer_id`,
-  `subscription_status`, `subscription_tier`.
-- Stripe Checkout session for a single Pro plan ($9/mo).
-- Stripe webhook → write `subscription_status` on
-  `customer.subscription.created|updated|deleted`.
-- Stripe Customer Portal link from /settings for cancel/update card.
+- Add `users` table with `clerk_user_id`, `polar_customer_id`,
+  `polar_subscription_id`, `subscription_status`, `subscription_tier`.
+- Polar checkout link / Checkout API session for the Pro product
+  ($9/mo). Polar is the Merchant of Record — Stripe doesn't support
+  Taiwan-based sellers, Polar does (Stripe Connect Express runs under
+  the hood for payouts, with Polar handling tax in the customer
+  jurisdiction).
+- Polar webhook → write `subscription_status` on
+  `subscription.created|updated|canceled|revoked`.
+- Polar Customer Portal link from /settings for cancel/update card.
 
 Routes added (private):
 - `/settings`
-- `/api/stripe/checkout`
-- `/api/stripe/webhook`
-- `/api/stripe/portal`
+- `/api/polar/checkout`
+- `/api/polar/webhook`
+- `/api/polar/portal`
 
 ### Day 2 — `/pricing` page + free/Pro gating
 
