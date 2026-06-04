@@ -18,6 +18,23 @@ you care about.**
 
 The bar for "this works" is one human paying once. Not $1k MRR.
 
+## Pricing decisions (locked)
+
+- **$9/month**, USD, recurring. Not $5 (death-zone price for indie
+  SaaS — same psychological friction as $9 but 80% less revenue per
+  paying user). Not $19 (asks for a clearer value story than the MVP
+  can deliver yet).
+- **No free trial.** The OSS core and the hosted free tier already let
+  anyone evaluate the product fully. Trial + credit-card collection
+  drops conversion 30–50% and adds refund / dunning code we don't need
+  on day one.
+- **30-day money-back guarantee** instead — surfaced in the pricing
+  page footer and the welcome email. Implementation = a one-click
+  refund from the Polar dashboard. No code.
+- **Yearly + Lifetime tiers** come later (Day 6 if launch goes well).
+  Targets: $79/yr (~27% off), $99 lifetime capped at 50 seats for
+  Show HN / Product Hunt launch.
+
 ## Day-by-day
 
 ### Day 1 — Auth + billing scaffolding
