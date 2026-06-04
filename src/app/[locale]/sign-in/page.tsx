@@ -1,7 +1,7 @@
 import { setRequestLocale } from "next-intl/server";
 
 import { Link } from "@/i18n/navigation";
-import { SignInButtons } from "@/components/SignInButtons";
+import { SignInPanel } from "@/components/SignInPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export default async function SignInPage({
         </p>
       </header>
 
-      <SignInButtons />
+      <SignInPanel />
 
       <p className="text-xs text-center text-[hsl(var(--muted-foreground))]">
         New here? Signing in with GitHub or Google creates your account
