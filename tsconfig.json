@@ -15,9 +15,19 @@
     "incremental": true,
     "plugins": [{ "name": "next" }],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@pro/*": ["./pro/*", "./pro-stub/*"]
     }
   },
-  "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", "drizzle.config.ts", "next.config.ts", ".next/types/**/*.ts"],
+  "include": [
+    "next-env.d.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "pro/**/*.ts",
+    "pro-stub/**/*.ts",
+    "drizzle.config.ts",
+    "next.config.ts",
+    ".next/types/**/*.ts"
+  ],
   "exclude": ["node_modules", "cli", "scripts/ingest"]
 }

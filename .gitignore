@@ -15,3 +15,9 @@ dist/
 /pro/
 /src/app/[locale]/(pro)/
 /src/lib/pro/
+
+# Local-only secrets (deploy keys, etc). Never commit.
+/.secrets/
+
+# Output dir of tsconfig.pro.json (in-place compile of /pro)
+/.pro-compiled/
