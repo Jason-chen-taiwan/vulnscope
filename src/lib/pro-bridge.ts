@@ -65,11 +65,22 @@ export async function proAuth(): Promise<ProModule | null> {
 
 export async function isPro(): Promise<boolean> {
   if (!PRO_ENABLED) return false;
-  const user = await getCurrentUser();
-  return (
-    !!user?.subscriptionStatus &&
-    ["active", "trialing"].includes(user.subscriptionStatus)
-  );
+  try {
+    const user = await getCurrentUser();
+    return (
+      !!user?.subscriptionStatus &&
+      ["active", "trialing"].includes(user.subscriptionStatus)
+    );
+  } catch (e) {
+    // OAuth env missing / DB unreachable / etc. Public pages
+    // (/pricing, etc.) shouldn't crash because the Pro tier is
+    // mid-configuration; just treat the visitor as anonymous.
+    console.warn(
+      "[pro-bridge] isPro() failed, treating as not-pro:",
+      e instanceof Error ? e.message : e,
+    );
+    return false;
+  }
 }
 
 export type { ProUser };

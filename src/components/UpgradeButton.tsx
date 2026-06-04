@@ -45,9 +45,9 @@ export function UpgradeButton({ alreadyPro }: { alreadyPro: boolean }) {
                 headers: { "content-type": "application/json" },
               });
               if (res.status === 401) {
-                // Not signed in — bounce to GitHub OAuth, return here.
-                const returnTo = encodeURIComponent("/pricing");
-                window.location.href = `/api/auth/sign-in/social?provider=github&callbackURL=${returnTo}`;
+                // Not signed in — bounce to /sign-in with a return URL
+                // so they come back here and can complete checkout.
+                window.location.href = "/sign-in?next=/pricing";
                 return;
               }
               if (!res.ok) {

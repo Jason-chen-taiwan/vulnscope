@@ -5,6 +5,7 @@ import { getMessages, getTranslations, setRequestLocale } from "next-intl/server
 import { HeaderSearch } from "@/components/HeaderSearch";
 import { LangSwitcher } from "@/components/LangSwitcher";
 import { Analytics } from "@/components/Analytics";
+import { AuthHeaderWidget } from "@/components/AuthHeaderWidget";
 import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import "./globals.css";
@@ -114,7 +115,11 @@ export default async function LocaleLayout({
               <Link href={{ pathname: "/search", query: { severity: "CRITICAL" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("critical")}</Link>
               <Link href="/insights" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">Insights</Link>
               <Link href="/admin/jobs" className="text-sm text-[hsl(var(--muted-foreground))] no-underline" title={t("jobsTitle")}>{t("jobs")}</Link>
-              <LangSwitcher />
+              <Link href="/pricing" className="text-sm font-medium no-underline">Pricing</Link>
+              <span className="ml-auto flex items-center gap-3">
+                <LangSwitcher />
+                <AuthHeaderWidget />
+              </span>
             </nav>
           </header>
           <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
