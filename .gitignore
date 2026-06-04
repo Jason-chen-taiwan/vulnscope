@@ -10,3 +10,8 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .claude/
+
+# Private Pro tier code (separate private repo, mounted at runtime)
+/pro/
+/src/app/[locale]/(pro)/
+/src/lib/pro/

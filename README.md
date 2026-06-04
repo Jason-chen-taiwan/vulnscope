@@ -182,6 +182,30 @@ opt-in env vars (`NEXT_PUBLIC_ADS_ENABLED`, `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`,
 build. The codebase is 100% open source under MIT — see `.env.example`
 for every available knob.
 
+### Open source vs. hosted Pro
+
+VulnScope is MIT open source — clone, self-host, hack it forever, no
+strings attached. Everything you need to run the same web app, ingest
+pipeline, and CLI lives in this repo.
+
+I also run a hosted Pro tier on [vulnscope.dev](https://vulnscope.dev)
+that adds:
+
+- **Watchlist** — pin packages, see new CVEs in one place
+- **Email alerts** — daily digest when a CVE hits a package you watch
+- **Higher API limits** for the CLI
+
+Pro features live in a separate private repo and aren't part of this
+codebase. The $9/mo pays the Fly bill and lets me work on this on
+weekends instead of letting it bitrot. If you self-host, you get the
+full open-source feature set forever — drop a cron entry and you can
+build the same alerting on top of `pnpm ingest:all`. If you want me to
+do the ops + send you CVE alerts, pay me $9/mo. Both are valid.
+
+See [`docs/pro-launch-plan.md`](./docs/pro-launch-plan.md) for the
+full Open Core split — which features stay open source, which are
+hosted-only, and why.
+
 ## CLI: `npx vulnscope check`
 
 A companion command-line tool that scans your lockfile against this
