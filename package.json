@@ -20,8 +20,10 @@
     "test:watch": "node node_modules/vitest/vitest.mjs"
   },
   "dependencies": {
+    "@polar-sh/sdk": "^0.47.1",
     "@renovatebot/pep440": "^1.0.0",
     "adm-zip": "^0.5.16",
+    "better-auth": "^1.6.14",
     "drizzle-orm": "^0.36.0",
     "next": "^15.0.0",
     "next-intl": "^4.12.0",
