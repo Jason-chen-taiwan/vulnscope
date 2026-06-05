@@ -1,4 +1,4 @@
-import { setRequestLocale } from "next-intl/server";
+import { setRequestLocale, getTranslations } from "next-intl/server";
 
 import { isPro } from "@/lib/pro-bridge";
 import { Link } from "@/i18n/navigation";
@@ -6,11 +6,18 @@ import { UpgradeButton } from "@/components/UpgradeButton";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = {
-  title: "Pricing — VulnScope",
-  description:
-    "Self-host VulnScope free forever (MIT) or get the hosted Pro tier with watchlists and daily CVE email alerts for $9/month.",
-};
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
+  const { locale } = await params;
+  const t = await getTranslations({ locale, namespace: "Pricing" });
+  return {
+    title: `${t("title")} — VulnScope`,
+    description: t("intro"),
+  };
+}
 
 export default async function Pricing({
   params,
@@ -19,73 +26,72 @@ export default async function Pricing({
 }) {
   const { locale } = await params;
   setRequestLocale(locale);
+  const t = await getTranslations("Pricing");
   const alreadyPro = await isPro();
 
   return (
     <div className="max-w-5xl mx-auto py-10 space-y-8">
       <header className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Pricing</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{t("title")}</h1>
         <p className="text-[hsl(var(--muted-foreground))] max-w-2xl">
-          VulnScope is MIT open source — clone, self-host, hack on it forever.
-          The hosted Pro tier adds the things that take a server: watchlists
-          and daily email alerts.
+          {t("intro")}
         </p>
       </header>
 
       <div className="grid md:grid-cols-3 gap-4">
         <Card
-          name="Self-host"
-          price="Free"
-          tagline="Forever, MIT, no strings."
+          name={t("selfhost.name")}
+          price={t("selfhost.price")}
+          tagline={t("selfhost.tagline")}
           features={[
-            "Full web UI + ingest pipeline",
-            "14 ecosystems (npm, PyPI, Debian, …)",
-            "KEV + EPSS overlays",
-            "vulnscope CLI scanner",
-            "Self-hosted on your own box",
+            t("selfhost.f1"),
+            t("selfhost.f2"),
+            t("selfhost.f3"),
+            t("selfhost.f4"),
+            t("selfhost.f5"),
           ]}
           cta={
             <a
               href="https://github.com/Jason-chen-taiwan/vulnscope#deploy-your-own"
               className="block w-full rounded-md border border-[hsl(var(--border))] text-center py-2 text-sm hover:bg-[hsl(var(--accent))]"
             >
-              Self-host docs →
+              {t("selfhost.cta")}
             </a>
           }
         />
 
         <Card
-          name="Free hosted"
-          price="$0"
-          tagline="Use our box, no signup, no ads."
+          name={t("freeHosted.name")}
+          price={t("freeHosted.price")}
+          tagline={t("freeHosted.tagline")}
           features={[
-            "Web UI on vulnscope.dev",
-            "Watch up to 3 packages (sign-in required)",
-            "Pin a specific version, see CVEs that affect it",
-            "CLI hits our public API (rate-limited)",
-            "RSS feeds",
+            t("freeHosted.f1"),
+            t("freeHosted.f2"),
+            t("freeHosted.f3"),
+            t("freeHosted.f4"),
+            t("freeHosted.f5"),
           ]}
           cta={
             <Link
               href="/sign-in"
               className="block w-full rounded-md border border-[hsl(var(--border))] text-center py-2 text-sm hover:bg-[hsl(var(--accent))]"
             >
-              Sign in to start →
+              {t("freeHosted.cta")}
             </Link>
           }
         />
 
         <Card
-          name="Pro"
-          price="$9/mo"
-          tagline="Stop checking. We email you."
+          name={t("pro.name")}
+          price={t("pro.price")}
+          tagline={t("pro.tagline")}
           featured
           features={[
-            "Watch up to 50 packages (vs 3 on free)",
-            "Daily email digest of new CVEs",
-            "KEV + EPSS rising alerts",
-            "10× higher CLI API limit",
-            "30-day money-back, no questions",
+            t("pro.f1"),
+            t("pro.f2"),
+            t("pro.f3"),
+            t("pro.f4"),
+            t("pro.f5"),
           ]}
           cta={<UpgradeButton alreadyPro={alreadyPro} />}
         />
@@ -93,25 +99,28 @@ export default async function Pricing({
 
       <footer className="text-sm text-[hsl(var(--muted-foreground))] space-y-2 pt-6 border-t border-[hsl(var(--border))]">
         <p>
-          <strong>30-day money-back guarantee.</strong> Don&apos;t like it?
-          Email{" "}
-          <a className="underline" href="mailto:jason@vulnscope.dev">
-            jason@vulnscope.dev
-          </a>
-          {" "}and I&apos;ll refund every cent. No forms, no questions.
+          {t.rich("footer.refund", {
+            strong: (chunks) => <strong>{chunks}</strong>,
+            email: (chunks) => (
+              <a className="underline" href="mailto:jason@vulnscope.dev">
+                {chunks}
+              </a>
+            ),
+          })}
         </p>
         <p>
-          Payments processed by{" "}
-          <a
-            className="underline"
-            href="https://polar.sh"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Polar
-          </a>{" "}
-          (Merchant of Record). Polar handles sales tax / VAT for your
-          jurisdiction; the receipt comes from Polar, not me.
+          {t.rich("footer.polar", {
+            polar: (chunks) => (
+              <a
+                className="underline"
+                href="https://polar.sh"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {chunks}
+              </a>
+            ),
+          })}
         </p>
       </footer>
     </div>

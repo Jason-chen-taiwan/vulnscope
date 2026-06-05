@@ -171,6 +171,58 @@
     "popularHeading": "熱門套件",
     "popularCveCount": "{n} 個 CVE"
   },
+  "Pricing": {
+    "title": "方案與價格",
+    "intro": "VulnScope 採 MIT 開源——可自行 clone、自架、自行修改。我們託管的 Pro 方案則多了需要伺服器才能跑的功能：套件監控清單與每日 CVE 通知信。",
+    "selfhost": {
+      "name": "自架",
+      "price": "免費",
+      "tagline": "永久免費、MIT 授權、無附加條款。",
+      "f1": "完整網頁介面 + 資料更新管線",
+      "f2": "支援 14 個生態系（npm、PyPI、Debian…）",
+      "f3": "KEV + EPSS 風險疊加",
+      "f4": "vulnscope CLI 掃描工具",
+      "f5": "自架在自己機器上",
+      "cta": "自架文件 →"
+    },
+    "freeHosted": {
+      "name": "免費託管",
+      "price": "$0",
+      "tagline": "用我們的伺服器，無廣告。",
+      "f1": "vulnscope.dev 網頁介面",
+      "f2": "可追蹤最多 3 個套件（需登入）",
+      "f3": "可釘選特定版本，查看真正影響該版本的 CVE",
+      "f4": "CLI 連到公開 API（有流量限制）",
+      "f5": "RSS 訂閱"
+    },
+    "pro": {
+      "name": "Pro",
+      "price": "$9/月",
+      "tagline": "別再人工檢查，我們寄信告訴你。",
+      "f1": "可追蹤最多 50 個套件（免費版為 3 個）",
+      "f2": "每日新 CVE 摘要 email",
+      "f3": "KEV 收錄與 EPSS 飆升即時通知",
+      "f4": "CLI API 限額提升 10 倍",
+      "f5": "30 天無條件退款"
+    },
+    "footer": {
+      "refund": "<strong>30 天無條件退款。</strong>不喜歡嗎？寄信到 <email>jason@vulnscope.dev</email>，我會把錢全額退給你。不用填表、不用回答任何問題。",
+      "polar": "金流由 <polar>Polar</polar> 處理（Merchant of Record）。Polar 會依你所在地處理稅務（消費稅 / VAT），收據也是由 Polar 寄出，不是由我寄出。"
+    },
+    "cta": {
+      "alreadyPro": "你已是 Pro 訂閱者——打開 dashboard →",
+      "checkout": "升級 Pro $9/月",
+      "opening": "前往結帳中…",
+      "signinHint": "請以 GitHub 或 Google 登入後再繼續。",
+      "generic": "發生錯誤"
+    }
+  },
+  "Header": {
+    "dashboard": "Dashboard",
+    "signIn": "登入",
+    "signOut": "登出",
+    "loadingSession": "正在載入登入狀態"
+  },
   "Jobs": {
     "title": "同步紀錄",
     "subtitle": "最近 100 次資料同步。排程器每 24 小時自動更新所有來源。",

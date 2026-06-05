@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations, useLocale } from "next-intl";
 
 import { useSession, signOut } from "@/lib/auth-client";
 
@@ -10,13 +11,15 @@ import { useSession, signOut } from "@/lib/auth-client";
  * import resolves on the client.
  */
 export function AuthHeaderWidgetInner() {
+  const t = useTranslations("Header");
+  const locale = useLocale();
   const { data: session, isPending } = useSession();
   const [signingOut, setSigningOut] = useState(false);
 
   if (isPending) {
     return (
       <span
-        aria-label="Loading session"
+        aria-label={t("loadingSession")}
         className="inline-block h-4 w-4 rounded-full bg-[hsl(var(--muted))] animate-pulse"
       />
     );
@@ -28,7 +31,7 @@ export function AuthHeaderWidgetInner() {
         href="/sign-in"
         className="text-sm font-medium text-[hsl(var(--foreground))] hover:underline"
       >
-        Sign in
+        {t("signIn")}
       </a>
     );
   }
@@ -39,10 +42,10 @@ export function AuthHeaderWidgetInner() {
   return (
     <div className="flex items-center gap-3">
       <a
-        href="/dashboard"
+        href={`/${locale}/dashboard`}
         className="text-sm font-medium text-[hsl(var(--foreground))] hover:underline"
       >
-        Dashboard
+        {t("dashboard")}
       </a>
       {user.image ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -72,7 +75,7 @@ export function AuthHeaderWidgetInner() {
         }}
         className="text-xs text-[hsl(var(--muted-foreground))] underline hover:text-[hsl(var(--foreground))] disabled:opacity-50"
       >
-        {signingOut ? "…" : "Sign out"}
+        {signingOut ? "…" : t("signOut")}
       </button>
     </div>
   );

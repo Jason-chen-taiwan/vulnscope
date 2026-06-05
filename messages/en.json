@@ -171,6 +171,59 @@
     "popularHeading": "Popular packages",
     "popularCveCount": "{n} CVEs"
   },
+  "Pricing": {
+    "title": "Pricing",
+    "intro": "VulnScope is MIT open source — clone, self-host, hack on it forever. The hosted Pro tier adds the things that take a server: watchlists and daily email alerts.",
+    "selfhost": {
+      "name": "Self-host",
+      "price": "Free",
+      "tagline": "Forever, MIT, no strings.",
+      "f1": "Full web UI + ingest pipeline",
+      "f2": "14 ecosystems (npm, PyPI, Debian, …)",
+      "f3": "KEV + EPSS overlays",
+      "f4": "vulnscope CLI scanner",
+      "f5": "Self-hosted on your own box",
+      "cta": "Self-host docs →"
+    },
+    "freeHosted": {
+      "name": "Free hosted",
+      "price": "$0",
+      "tagline": "Use our box, no ads.",
+      "f1": "Web UI on vulnscope.dev",
+      "f2": "Watch up to 3 packages (sign-in required)",
+      "f3": "Pin a specific version, see CVEs that affect it",
+      "f4": "CLI hits our public API (rate-limited)",
+      "f5": "RSS feeds",
+      "cta": "Sign in to start →"
+    },
+    "pro": {
+      "name": "Pro",
+      "price": "$9/mo",
+      "tagline": "Stop checking. We email you.",
+      "f1": "Watch up to 50 packages (vs 3 on free)",
+      "f2": "Daily email digest of new CVEs",
+      "f3": "KEV + EPSS rising alerts",
+      "f4": "10× higher CLI API limit",
+      "f5": "30-day money-back, no questions"
+    },
+    "footer": {
+      "refund": "<strong>30-day money-back guarantee.</strong> Don't like it? Email <email>jason@vulnscope.dev</email> and I'll refund every cent. No forms, no questions.",
+      "polar": "Payments processed by <polar>Polar</polar> (Merchant of Record). Polar handles sales tax / VAT for your jurisdiction; the receipt comes from Polar, not me."
+    },
+    "cta": {
+      "alreadyPro": "You're on Pro — open dashboard →",
+      "checkout": "Get Pro for $9/mo",
+      "opening": "Opening checkout…",
+      "signinHint": "Sign in with GitHub or Google to continue.",
+      "generic": "Something went wrong"
+    }
+  },
+  "Header": {
+    "dashboard": "Dashboard",
+    "signIn": "Sign in",
+    "signOut": "Sign out",
+    "loadingSession": "Loading session"
+  },
   "Jobs": {
     "title": "Sync jobs",
     "subtitle": "Last 100 ingest runs. The scheduler refreshes all sources every 24 hours.",
