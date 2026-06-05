@@ -37,7 +37,13 @@ export function AuthHeaderWidgetInner() {
   const initial = (user.name || user.email || "?")[0].toUpperCase();
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-3">
+      <a
+        href="/dashboard"
+        className="text-sm font-medium text-[hsl(var(--foreground))] hover:underline"
+      >
+        Dashboard
+      </a>
       {user.image ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img

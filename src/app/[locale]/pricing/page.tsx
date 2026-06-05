@@ -60,17 +60,17 @@ export default async function Pricing({
           tagline="Use our box, no signup, no ads."
           features={[
             "Web UI on vulnscope.dev",
+            "Watch up to 3 packages (sign-in required)",
+            "Pin a specific version, see CVEs that affect it",
             "CLI hits our public API (rate-limited)",
-            "Public package & CVE pages",
             "RSS feeds",
-            "No account required",
           ]}
           cta={
             <Link
-              href="/"
+              href="/sign-in"
               className="block w-full rounded-md border border-[hsl(var(--border))] text-center py-2 text-sm hover:bg-[hsl(var(--accent))]"
             >
-              Start exploring →
+              Sign in to start →
             </Link>
           }
         />
@@ -81,7 +81,7 @@ export default async function Pricing({
           tagline="Stop checking. We email you."
           featured
           features={[
-            "Unlimited package watchlist",
+            "Watch up to 50 packages (vs 3 on free)",
             "Daily email digest of new CVEs",
             "KEV + EPSS rising alerts",
             "10× higher CLI API limit",
