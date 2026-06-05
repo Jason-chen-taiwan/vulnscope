@@ -70,8 +70,14 @@ const SOURCE_TIMEOUTS_MS: Record<string, number> = {
   epss: 10 * 60_000,
   nvd: 70 * 60_000,
   exploits: 5 * 60_000,
-  "osv:npm": 10 * 60_000,
-  "osv:Debian": 10 * 60_000,
+  // npm + Debian are the two largest OSV ecosystems by record count
+  // (220k and 60k respectively). After v34 yauzl-streaming, expected
+  // wall time is ~5min for npm, ~2min for Debian — but the entry-walk
+  // rate hasn't been validated under prod shared-CPU contention.
+  // Timeouts catch hangs, not slow-but-progressing work; 15min gives
+  // headroom for bad days without forcing a v35.
+  "osv:npm": 15 * 60_000,
+  "osv:Debian": 15 * 60_000,
 };
 
 function limitFor(source: string): number {

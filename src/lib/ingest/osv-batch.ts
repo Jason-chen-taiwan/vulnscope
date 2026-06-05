@@ -33,9 +33,9 @@
 import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
-import { promises as fs } from "node:fs";
-import { join } from "node:path";
 import pLimit from "p-limit";
+import yauzl from "yauzl";
+import type { Entry, ZipFile } from "yauzl";
 
 import {
   vulnerabilities,
@@ -403,7 +403,8 @@ function collectAliases(
 
 export interface StreamOsvOptions {
   ctx: UpsertCtx;
-  extractDir: string;
+  /** Path to the OSV bulk-download zip file. */
+  zipPath: string;
   db: IngestDb;
   pool: IngestPool;
   signal?: AbortSignal;
@@ -426,43 +427,141 @@ export interface StreamOsvOptions {
   log?: (msg: string) => void;
 }
 
+// ─── yauzl helpers ───────────────────────────────────────────────────────────
+
 /**
- * Walks an extracted OSV directory, parses each *.json record, and
- * writes it via per-chunk multi-row INSERTs. One chunk = one flush =
- * one Buffers allocation, dropped to GC immediately after. Yields the
- * event loop with setImmediate between chunks so concurrent work
- * (web SSR, health checks) stays responsive.
- *
- * Throws if `signal?.aborted` becomes true at a chunk boundary, or if
- * the directory iterator surfaces an error. Per-file errors (bad JSON,
- * schema mismatch) are swallowed — the run continues.
- *
- * Returns cumulative `{processed, imported}` after the iterator drains.
+ * Promisified yauzl.open.
  */
-export async function streamOsvDir(opts: StreamOsvOptions): Promise<{
+function openZip(path: string): Promise<ZipFile> {
+  return new Promise((resolve, reject) => {
+    yauzl.open(path, { lazyEntries: true }, (err, zip) => {
+      if (err) return reject(err);
+      if (!zip) return reject(new Error("yauzl returned no zip"));
+      resolve(zip);
+    });
+  });
+}
+
+/**
+ * Wraps a yauzl ZipFile (lazyEntries: true) as an async iterator that
+ * yields one Entry at a time. `readEntry()` is called from exactly one
+ * place — the `next()` advance below — so double-call hangs are
+ * impossible by construction, not by discipline. Both success path
+ * ("entry" event) and end path ("end" event) and error path ("error"
+ * event) all resolve the same pending Promise; only consumer-side
+ * `next()` triggers the next `readEntry()`.
+ */
+function entriesOf(zip: ZipFile): AsyncIterable<Entry> {
+  type Pending = { kind: "entry"; entry: Entry } | { kind: "end" } | { kind: "err"; err: Error };
+  let pendingResolver: ((p: Pending) => void) | null = null;
+  let queued: Pending | null = null;
+
+  function publish(p: Pending) {
+    if (pendingResolver) {
+      const r = pendingResolver;
+      pendingResolver = null;
+      r(p);
+    } else {
+      queued = p;
+    }
+  }
+
+  zip.on("entry", (entry: Entry) => publish({ kind: "entry", entry }));
+  zip.on("end", () => publish({ kind: "end" }));
+  zip.on("error", (err: Error) => publish({ kind: "err", err }));
+
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<Entry>> {
+          // Pull next event. Trigger readEntry once per next() call —
+          // single source of truth for the advance.
+          const next = await new Promise<Pending>((resolve) => {
+            if (queued) {
+              const q = queued;
+              queued = null;
+              resolve(q);
+              return;
+            }
+            pendingResolver = resolve;
+            zip.readEntry();
+          });
+          if (next.kind === "end") return { done: true, value: undefined };
+          if (next.kind === "err") throw next.err;
+          return { done: false, value: next.entry };
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Drain a yauzl entry's read stream into a UTF-8 string. Each entry
+ * stream must be fully consumed before the next entry can be requested
+ * (yauzl is single-reader under lazyEntries).
+ */
+function readEntryContent(zip: ZipFile, entry: Entry): Promise<string> {
+  return new Promise((resolve, reject) => {
+    zip.openReadStream(entry, (err, stream) => {
+      if (err) return reject(err);
+      if (!stream) return reject(new Error(`openReadStream returned no stream for ${entry.fileName}`));
+      const chunks: Buffer[] = [];
+      stream.on("data", (c: Buffer) => chunks.push(c));
+      stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      stream.on("error", reject);
+    });
+  });
+}
+
+function closeZip(zip: ZipFile): void {
+  try {
+    zip.close();
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Streams entries directly out of an OSV bulk-download zip, parses
+ * each *.json record, and writes via per-chunk multi-row INSERTs.
+ *
+ * One chunk = one Buffers allocation + one flush, dropped to GC and
+ * setImmediate-yielded immediately after. Flat memory profile, keeps
+ * the event loop responsive for web SSR and Fly health checks.
+ *
+ * No extraction to disk: yauzl decompresses each entry directly into
+ * a memory buffer. Eliminates the 22-minute `unzip` stage that killed
+ * npm ingest in v33.
+ *
+ * Throws if `signal?.aborted` becomes true at a chunk boundary or if
+ * yauzl surfaces an error. Per-record errors (bad JSON, schema
+ * mismatch) are swallowed.
+ */
+export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
   processed: number;
   imported: number;
 }> {
-  const { ctx, extractDir, db, pool, signal, onChunk, classifyAlias, log } = opts;
+  const { ctx, zipPath, db, pool, signal, onChunk, classifyAlias, log } = opts;
   const logFn = log ?? (() => {});
 
   let processed = 0;
   let imported = 0;
   let chunkIndex = 0;
-  let pending: string[] = [];
+  type Pending = { name: string; content: string };
+  let pending: Pending[] = [];
 
   const limit = pLimit(PARSE_CONCURRENCY);
 
-  async function processChunk(files: string[]) {
-    if (files.length === 0) return;
+  async function processChunk(items: Pending[]) {
+    if (items.length === 0) return;
     if (signal?.aborted) throw new Error(`aborted: osv:${ctx.eco}`);
 
     const buf = emptyBuffers();
     await Promise.all(
-      files.map((name) =>
+      items.map((item) =>
         limit(async () => {
           try {
-            const raw = JSON.parse(await fs.readFile(join(extractDir, name), "utf8"));
+            const raw = JSON.parse(item.content);
             const parsed = osvRecordSchema.safeParse(raw);
             if (!parsed.success) return;
             const rec = parsed.data;
@@ -483,11 +582,6 @@ export async function streamOsvDir(opts: StreamOsvOptions): Promise<{
     if (buf.vulns.length || buf.aliases.length) {
       await flush(buf, db);
     }
-    // Best-effort unlink so /tmp doesn't bloat for the rest of the run.
-    // Failures swallowed — the outer `fs.rm(work, recursive)` mops up.
-    await Promise.all(
-      files.map((n) => fs.unlink(join(extractDir, n)).catch(() => {})),
-    );
     maybeTrimPkgCache(ctx);
 
     chunkIndex++;
@@ -503,26 +597,26 @@ export async function streamOsvDir(opts: StreamOsvOptions): Promise<{
     await new Promise((r) => setImmediate(r));
   }
 
-  // opendir returns an async iterator. Walking it yields one Dirent at a
-  // time without materializing the full filename array in memory.
-  const dir = await fs.opendir(extractDir);
+  const zip = await openZip(zipPath);
   try {
-    for await (const dirent of dir) {
-      if (!dirent.isFile() || !dirent.name.endsWith(".json")) continue;
-      pending.push(dirent.name);
+    for await (const entry of entriesOf(zip)) {
+      // Filter on fileName BEFORE opening a stream — we never want an
+      // open stream we don't drain (yauzl is single-reader; an
+      // abandoned stream wedges the iterator).
+      if (!entry.fileName.endsWith(".json")) continue;
+      const content = await readEntryContent(zip, entry);
+      pending.push({ name: entry.fileName, content });
       if (pending.length >= PARSE_CHUNK) {
         const slice = pending;
         pending = [];
         await processChunk(slice);
       }
     }
+    if (pending.length > 0) await processChunk(pending);
   } finally {
-    // opendir's iterator closes the handle on exhaustion but if we throw
-    // mid-iteration (e.g. abort) we need to explicitly close.
-    await dir.close().catch(() => {});
+    closeZip(zip);
   }
-  // Drain tail.
-  if (pending.length > 0) await processChunk(pending);
 
   return { processed, imported };
 }
+

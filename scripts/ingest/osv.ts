@@ -20,12 +20,11 @@ import { fetch } from "undici";
 import { createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db, pool } from "../../src/db/client";
-import { streamOsvDir, type UpsertCtx } from "../../src/lib/ingest/osv-batch";
+import { streamOsvZip, type UpsertCtx } from "../../src/lib/ingest/osv-batch";
 
 const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
@@ -72,26 +71,13 @@ async function downloadZipToFile(url: string, dest: string): Promise<void> {
   await pipeline(Readable.fromWeb(res.body as never), createWriteStream(dest));
 }
 
-async function extractZip(zipPath: string, destDir: string): Promise<void> {
-  await fs.mkdir(destDir, { recursive: true });
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn("unzip", ["-q", "-o", zipPath, "-d", destDir], { stdio: "inherit" });
-    child.on("error", reject);
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`unzip exited ${code}`))));
-  });
-}
-
 async function ingestEcosystem(ecoArg: string) {
   const eco = canonicalizeEco(ecoArg);
   const url = `${BASE_URL}/${encodeURIComponent(ecoArg)}/all.zip`;
   const work = await fs.mkdtemp(join(tmpdir(), "osv-"));
   const zipPath = join(work, "all.zip");
-  const extractDir = join(work, "json");
   try {
     await downloadZipToFile(url, zipPath);
-    console.log(`[osv:${eco}] extracting…`);
-    await extractZip(zipPath, extractDir);
-    await fs.unlink(zipPath).catch(() => {});
 
     const ctx: UpsertCtx = {
       eco,
@@ -99,9 +85,9 @@ async function ingestEcosystem(ecoArg: string) {
       pkgCache: new Map(),
     };
     const startTime = Date.now();
-    const { processed, imported } = await streamOsvDir({
+    const { processed, imported } = await streamOsvZip({
       ctx,
-      extractDir,
+      zipPath,
       db,
       pool,
       classifyAlias,

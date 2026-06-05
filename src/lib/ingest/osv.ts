@@ -3,7 +3,6 @@ import { fetch } from "undici";
 import { createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +10,7 @@ import { ingestDb, ingestPool } from "@/db/ingest-pool";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
 import { ensureIngestSchema } from "./ensure-schema";
-import { streamOsvDir, type UpsertCtx } from "./osv-batch";
+import { streamOsvZip, type UpsertCtx } from "./osv-batch";
 
 /**
  * Classify a non-CVE identifier into a source tag so the UI can group
@@ -52,15 +51,6 @@ async function downloadZipToFile(url: string, dest: string): Promise<void> {
   await pipeline(Readable.fromWeb(res.body as never), createWriteStream(dest));
 }
 
-async function extractZip(zipPath: string, destDir: string): Promise<void> {
-  await fs.mkdir(destDir, { recursive: true });
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn("unzip", ["-q", "-o", zipPath, "-d", destDir], { stdio: "ignore" });
-    child.on("error", reject);
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`unzip exited ${code}`))));
-  });
-}
-
 export interface RunOsvOptions {
   /**
    * Cooperative cancellation signal. Checked at each chunk boundary
@@ -96,11 +86,8 @@ export async function runOsvIngest(
 
     const work = await fs.mkdtemp(join(tmpdir(), "osv-"));
     const zipPath = join(work, "all.zip");
-    const extractDir = join(work, "json");
     try {
       await downloadZipToFile(url, zipPath);
-      await extractZip(zipPath, extractDir);
-      await fs.unlink(zipPath).catch(() => {});
 
       const ctx: UpsertCtx = {
         eco,
@@ -108,9 +95,9 @@ export async function runOsvIngest(
         pkgCache: new Map(),
       };
 
-      const result = await streamOsvDir({
+      const result = await streamOsvZip({
         ctx,
-        extractDir,
+        zipPath,
         db: ingestDb,
         pool: ingestPool,
         signal: opts?.signal,
@@ -127,6 +114,7 @@ export async function runOsvIngest(
       processed = result.processed;
       imported = result.imported;
     } finally {
+      // `work` now holds only the zip — single unlink, no inode storm.
       await fs.rm(work, { recursive: true, force: true }).catch(() => {});
     }
     if (upstreamMtime) await setMeta(metaKey, upstreamMtime);
