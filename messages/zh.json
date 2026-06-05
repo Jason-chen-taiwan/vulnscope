@@ -139,6 +139,23 @@
       "blurb": "{eco} 生態系中所有受 CVE 影響的套件,按風險排序。"
     }
   },
+  "Dashboard": {
+    "watchlistTitle": "你的監控清單",
+    "watchlistEmptyTitle": "尚未追蹤任何套件",
+    "watchlistEmptyBody": "下方搜尋並加入一個套件——我們會顯示它最近的 CVE，並在有新漏洞出現時用 email 通知你。試試 {sample1} 或 {sample2}。",
+    "addPlaceholder": "搜尋要追蹤的套件…",
+    "usage": "已追蹤 {used}/{limit}",
+    "usageUnlimited": "已追蹤 {used} 個 · 無上限",
+    "limitReachedTitle": "已達免費方案上限",
+    "limitReachedBody": "升級 Pro 取得無上限套件追蹤與每日 CVE 通知信。",
+    "limitReachedCta": "升級 Pro",
+    "remove": "從清單移除",
+    "noCvesYet": "目前沒有已知的 CVE——有新漏洞時我們會通知你。",
+    "noResults": "找不到符合 {query} 的套件",
+    "addError": "加入失敗，請再試一次。",
+    "removeError": "移除失敗，請再試一次。",
+    "loadError": "清單暫時無法載入，請稍後重整頁面。"
+  },
   "Jobs": {
     "title": "同步紀錄",
     "subtitle": "最近 100 次資料同步。排程器每 24 小時自動更新所有來源。",

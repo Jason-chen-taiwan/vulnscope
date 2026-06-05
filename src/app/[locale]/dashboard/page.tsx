@@ -2,6 +2,8 @@ import { setRequestLocale } from "next-intl/server";
 
 import { proAuth } from "@/lib/pro-bridge";
 import { Link } from "@/i18n/navigation";
+import { WatchlistPanel } from "@/components/dashboard/WatchlistPanel";
+import type { ClientWatchlistRow } from "@/components/dashboard/types";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +55,36 @@ export default async function DashboardPage({
   const isActive =
     !!user.subscriptionStatus &&
     ["active", "trialing"].includes(user.subscriptionStatus);
+
+  // Server-fetch the initial watchlist so the first paint has no
+  // client spinner. Falls back to an empty list if the Pro module
+  // is disabled / DB is down; the WatchlistPanel will degrade
+  // gracefully.
+  let initialItems: ClientWatchlistRow[] = [];
+  try {
+    if (pro) {
+      const rows = await pro.getWatchlistWithSummary(user.id);
+      initialItems = rows.map((r) => ({
+        id: r.id,
+        ecosystem: r.ecosystem,
+        packageName: r.packageName,
+        createdAt: r.createdAt.toISOString(),
+        lastAlertedAt: r.lastAlertedAt.toISOString(),
+        latestCves: r.latestCves.map((cve) => ({
+          cve_id: cve.cve_id,
+          summary: cve.summary,
+          published_at: cve.published_at ? cve.published_at.toISOString() : null,
+          kev: cve.kev,
+          epss_score: cve.epss_score,
+          severity: cve.severity,
+          base_score: cve.base_score,
+        })),
+      }));
+    }
+  } catch (e) {
+    console.error("[dashboard] watchlist fetch failed:", e);
+  }
+  const freeLimit = pro?.FREE_WATCHLIST_LIMIT ?? 3;
 
   return (
     <div className="max-w-3xl mx-auto py-10 space-y-8">
@@ -126,15 +158,11 @@ export default async function DashboardPage({
         )}
       </section>
 
-      <section className="rounded-lg border border-[hsl(var(--border))] border-dashed p-5 text-sm text-[hsl(var(--muted-foreground))]">
-        <h2 className="text-base font-medium mb-2 text-[hsl(var(--foreground))]">
-          Watchlist (coming this week)
-        </h2>
-        <p>
-          Pin packages you care about, get a daily email when new CVEs (KEV
-          or high EPSS) hit them. Adding the UI here next.
-        </p>
-      </section>
+      <WatchlistPanel
+        initialItems={initialItems}
+        isPro={isActive}
+        freeLimit={freeLimit}
+      />
     </div>
   );
 }

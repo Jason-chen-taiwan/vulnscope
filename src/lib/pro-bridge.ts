@@ -31,6 +31,15 @@ import {
   customerPortalUrl,
 } from "@pro/billing/polar";
 import { handlePolarWebhook } from "@pro/billing/webhook";
+import {
+  getWatchlistWithSummary,
+  countWatches,
+  addWatch,
+  removeWatch,
+  FREE_WATCHLIST_LIMIT,
+  type WatchlistRow,
+  type WatchlistDisplayRow,
+} from "@pro/lib/watchlist";
 
 const PRO_ENABLED = process.env.PRO_ENABLED === "1";
 
@@ -42,6 +51,11 @@ export type ProModule = {
   createCheckoutSession: typeof createCheckoutSession;
   customerPortalUrl: typeof customerPortalUrl;
   handlePolarWebhook: typeof handlePolarWebhook;
+  getWatchlistWithSummary: typeof getWatchlistWithSummary;
+  countWatches: typeof countWatches;
+  addWatch: typeof addWatch;
+  removeWatch: typeof removeWatch;
+  FREE_WATCHLIST_LIMIT: typeof FREE_WATCHLIST_LIMIT;
 };
 
 const proModule: ProModule = {
@@ -52,6 +66,11 @@ const proModule: ProModule = {
   createCheckoutSession,
   customerPortalUrl,
   handlePolarWebhook,
+  getWatchlistWithSummary,
+  countWatches,
+  addWatch,
+  removeWatch,
+  FREE_WATCHLIST_LIMIT,
 };
 
 /**
@@ -83,4 +102,4 @@ export async function isPro(): Promise<boolean> {
   }
 }
 
-export type { ProUser };
+export type { ProUser, WatchlistRow, WatchlistDisplayRow };

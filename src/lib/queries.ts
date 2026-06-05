@@ -457,6 +457,53 @@ export async function getRecentVulns(limit = 10) {
   }>;
 }
 
+/**
+ * Top N recent CVEs for a (ecosystem, packageName) pair, joined with
+ * the highest CVSS severity per CVE. Returns [] if the package is
+ * unknown — callers should display a "no CVEs known yet" placeholder
+ * rather than treating it as an error.
+ *
+ * Used by the Pro tier watchlist dashboard to show "what's the latest
+ * thing I should worry about on this package" without forcing the
+ * user to navigate to the full package page.
+ *
+ * Sort: published_at DESC (most recent first), NULLs last. We
+ * deliberately don't apply the KEV-first reordering that
+ * getPackageWithCves does, because the dashboard wants "what just
+ * dropped" not "what's most exploited in history".
+ */
+export async function getLatestCvesForPackage(
+  ecosystem: string,
+  name: string,
+  limit = 3,
+): Promise<VulnListItem[]> {
+  const { rows } = await pool.query(
+    `
+    SELECT v.cve_id, v.summary, v.description,
+           v.published_at, v.modified_at,
+           v.kev, v.kev_added_at,
+           v.epss_score::float8 AS epss_score,
+           v.epss_percentile::float8 AS epss_percentile,
+           cs.severity, cs.base_score::float8 AS base_score
+      FROM affected a
+      JOIN packages p ON p.id = a.package_id
+      JOIN vulnerabilities v ON v.cve_id = a.cve_id
+      LEFT JOIN LATERAL (
+        SELECT severity, base_score
+          FROM cvss_scores
+         WHERE cve_id = v.cve_id
+         ORDER BY base_score DESC NULLS LAST
+         LIMIT 1
+      ) cs ON true
+     WHERE p.ecosystem = $1 AND p.name = $2
+     ORDER BY v.published_at DESC NULLS LAST
+     LIMIT $3
+    `,
+    [ecosystem, name, limit],
+  );
+  return rows as VulnListItem[];
+}
+
 // Suppress unused-import warnings in clients that don't need drizzle.
 void db;
 void sql;
