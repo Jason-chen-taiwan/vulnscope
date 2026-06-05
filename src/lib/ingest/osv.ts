@@ -1,6 +1,5 @@
 import "server-only";
 import { fetch } from "undici";
-import pLimit from "p-limit";
 import { createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -9,25 +8,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ingestDb, ingestPool } from "@/db/ingest-pool";
-import { osvRecordSchema } from "@/lib/osv";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
 import { ensureIngestSchema } from "./ensure-schema";
-import {
-  bufferRecord,
-  emptyBuffers,
-  flush,
-  maybeTrimPkgCache,
-  pushAlias,
-  CHUNK_RECORDS,
-  type Buffers,
-  type UpsertCtx,
-} from "./osv-batch";
+import { streamOsvDir, type UpsertCtx } from "./osv-batch";
 
 /**
  * Classify a non-CVE identifier into a source tag so the UI can group
  * by ecosystem advisory provider. Unknown prefixes fall to "other"
- * rather than being dropped — we want to surface unknowns, not lose data.
+ * rather than being dropped — we want to surface unknowns, not lose
+ * data.
+ *
+ * Lives here (not in osv-batch.ts) so osv-batch stays domain-agnostic;
+ * the function is injected into streamOsvDir via options.
  */
 function classifyAlias(alias: string): string {
   const a = alias.toUpperCase();
@@ -68,29 +61,11 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
   });
 }
 
-function collectAliases(
-  rec: { id?: string; aliases?: string[]; upstream?: string[]; related?: string[] },
-  cveId: string,
-): string[] {
-  const out = new Set<string>();
-  if (rec.id && !/^CVE-\d{4}-\d+$/i.test(rec.id) && rec.id !== cveId) out.add(rec.id);
-  for (const a of rec.aliases ?? []) {
-    if (a && !/^CVE-\d{4}-\d+$/i.test(a) && a !== cveId) out.add(a);
-  }
-  for (const u of rec.upstream ?? []) {
-    if (u && !/^CVE-\d{4}-\d+$/i.test(u) && u !== cveId) out.add(u);
-  }
-  for (const r of rec.related ?? []) {
-    if (r && !/^CVE-\d{4}-\d+$/i.test(r) && r !== cveId) out.add(r);
-  }
-  return [...out];
-}
-
 export interface RunOsvOptions {
   /**
-   * Cooperative cancellation signal. Checked at each parse-chunk
-   * boundary; throws if aborted. Does NOT cancel in-flight pg queries —
-   * those are bounded by the ingest pool's `statement_timeout`.
+   * Cooperative cancellation signal. Checked at each chunk boundary
+   * inside streamOsvDir; throws if aborted. Does NOT cancel in-flight
+   * pg queries — those are bounded by the ingest pool's `statement_timeout`.
    */
   signal?: AbortSignal;
 }
@@ -102,7 +77,7 @@ export async function runOsvIngest(
   const eco = canonicalizeEco(ecosystem);
   await ensureIngestSchema();
   const job = await startJob(`osv:${eco}`);
-  let seen = 0;
+  let processed = 0;
   let imported = 0;
   const metaKey = `osv:${eco}:last_modified`;
   try {
@@ -126,80 +101,39 @@ export async function runOsvIngest(
       await downloadZipToFile(url, zipPath);
       await extractZip(zipPath, extractDir);
       await fs.unlink(zipPath).catch(() => {});
-      const files = (await fs.readdir(extractDir)).filter((f) => f.endsWith(".json"));
-      seen = files.length;
+
       const ctx: UpsertCtx = {
         eco,
         ecoMatch: (recordEco) => canonicalizeEco(recordEco) === eco,
         pkgCache: new Map(),
       };
-      // Parse concurrency 3 and parse chunk 100 bound peak Node heap:
-      // each in-flight record holds the file string + parsed object +
-      // zod's intermediate, which adds up fast on the 220k-record npm
-      // zip. The chunk boundary is also a microtask yield where V8 reaps.
-      const limit = pLimit(3);
-      const PARSE_CHUNK = 100;
-      let processed = 0;
-      let buf: Buffers = emptyBuffers();
 
-      // Coordinator: buffer accumulates across multiple parse chunks
-      // until >= CHUNK_RECORDS records are in flight, then we flush.
-      // The flush boundary is independent of the parse boundary so the
-      // batched INSERT amortizes its network cost properly.
-      async function maybeFlush(force: boolean) {
-        if (force || buf.recordsBuffered >= CHUNK_RECORDS) {
-          if (buf.vulns.length || buf.aliases.length) {
-            await flush(buf, ingestDb);
-          }
-          buf = emptyBuffers();
-        }
-      }
-
-      for (let off = 0; off < files.length; off += PARSE_CHUNK) {
-        if (opts?.signal?.aborted) throw new Error(`aborted: osv:${eco}`);
-        const slice = files.slice(off, off + PARSE_CHUNK);
-        await Promise.all(
-          slice.map((name) =>
-            limit(async () => {
-              try {
-                const raw = JSON.parse(await fs.readFile(join(extractDir, name), "utf8"));
-                const parsed = osvRecordSchema.safeParse(raw);
-                if (!parsed.success) return;
-                const rec = parsed.data;
-                const cveId = await bufferRecord(ctx, buf, rec, ingestDb, ingestPool);
-                if (!cveId) return;
-                imported++;
-                for (const alias of collectAliases(rec, cveId)) {
-                  pushAlias(buf, cveId, alias, classifyAlias(alias));
-                }
-              } catch {
-                /* per-record errors swallowed; aggregate metrics go to job row */
-              } finally {
-                processed++;
-              }
-            }),
-          ),
-        );
-        maybeTrimPkgCache(ctx);
-        await maybeFlush(false);
-        // Surface live progress to the sync_jobs row. The handle
-        // coalesces these (max one UPDATE per second) so even calling
-        // every parse chunk doesn't flood the DB.
-        job.progress({ seen: processed, changed: imported });
-        // Yield to the event loop so V8 can reap the chunk's parsed
-        // records before the next batch. Critical on 1GB Fly machines.
-        await new Promise((r) => setImmediate(r));
-      }
-      // Tail flush — the last partial buffer.
-      await maybeFlush(true);
+      const result = await streamOsvDir({
+        ctx,
+        extractDir,
+        db: ingestDb,
+        pool: ingestPool,
+        signal: opts?.signal,
+        classifyAlias,
+        log: (msg) => console.log(msg),
+        onChunk({ processed: p, imported: i }) {
+          processed = p;
+          imported = i;
+          // JobHandle coalesces these (max 1 UPDATE/s) so calling every
+          // chunk doesn't flood the DB.
+          job.progress({ seen: p, changed: i });
+        },
+      });
+      processed = result.processed;
+      imported = result.imported;
     } finally {
       await fs.rm(work, { recursive: true, force: true }).catch(() => {});
     }
     if (upstreamMtime) await setMeta(metaKey, upstreamMtime);
-    await job.finish({ seen, changed: imported, error: null });
-    return { seen, changed: imported };
+    await job.finish({ seen: processed, changed: imported, error: null });
+    return { seen: processed, changed: imported };
   } catch (err) {
-    await job.finish({ seen, changed: imported, error: err as Error });
+    await job.finish({ seen: processed, changed: imported, error: err as Error });
     throw err;
   }
 }

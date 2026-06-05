@@ -1,32 +1,41 @@
 /**
- * Shared OSV ingest batch core.
+ * Shared OSV ingest streaming core.
  *
- * Single source of truth for the OSV row-shaping + multi-VALUES INSERT
- * logic. Imported by both the scheduler-driven library version
- * (src/lib/ingest/osv.ts) and the ops CLI (scripts/ingest/osv.ts) so the
- * two no longer drift.
+ * Single source of truth for the OSV opendir → parse → flush loop +
+ * row-shaping + multi-VALUES INSERT logic. Imported by both the
+ * scheduler-driven library version (src/lib/ingest/osv.ts) and the ops
+ * CLI (scripts/ingest/osv.ts) so the two never drift.
  *
- * The two callers differ only in:
- *   - which pg pool / drizzle wrapper they pass in (web vs ingest)
- *   - whether they pipe in an AbortSignal for cooperative cancellation
- *   - what they do with progress / job tracking around the call
+ * Streaming model: each parse chunk (~50 records) builds its own fresh
+ * Buffers, flushes once, then drops it for GC and yields the event loop.
+ * NEVER aggregate across chunks. Earlier attempts at "buffer 1000 records
+ * then flush" starved Node's event loop during npm ingest — drizzle's
+ * 1000-row INSERT serialization is CPU-bound and bunched all the work
+ * into spike windows that blocked web SSR and Fly health checks.
  *
- * Performance rationale: doing one INSERT per child row gave us ~2.2M
- * sequential round-trips for npm (220k records × ~10 child rows) and a
- * 40-minute run that fly's boot reaper killed. Buffering 1000 records
- * per chunk and flushing as multi-row INSERTs (max 1000 rows per
- * statement) drops that to ~1000 round-trips. Same upsert semantics —
- * vulnerabilities still COALESCEs to preserve KEV/EPSS, the three child
- * tables still ON CONFLICT DO NOTHING.
+ * Each chunk does one multi-row INSERT per child table (vulns first
+ * because everything else FK to cveId, then cvss/affected/refs/aliases
+ * in parallel). Wire cost per statement is ~1-5ms over Fly internal
+ * network — total ingest stays well under the per-source budget while
+ * leaving the event loop responsive.
  *
  * In-buffer dedup is required because Postgres can't deduplicate within
  * a single statement — same (cveId, version, source) appearing twice in
- * one INSERT fails the conflict target. The four `*Seen` maps/sets are
- * keyed on each table's UNIQUE constraint.
+ * one INSERT fails the conflict target. The five `*Seen` maps/sets are
+ * keyed on each table's UNIQUE constraint; per-chunk scope means windows
+ * are at most one chunk wide (cross-chunk dups resolved server-side via
+ * ON CONFLICT DO NOTHING / DO UPDATE).
+ *
+ * Future work: stream directly from the zip via yauzl/unzipper to drop
+ * the `unzip → extract → opendir` chain. Non-trivial refactor; the
+ * current shape is good enough for prod under the 1GB Fly VM.
  */
 import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
+import { promises as fs } from "node:fs";
+import { join } from "node:path";
+import pLimit from "p-limit";
 
 import {
   vulnerabilities,
@@ -38,6 +47,7 @@ import {
 } from "@/db/schema";
 import * as schema from "@/db/schema";
 import {
+  osvRecordSchema,
   pickCveAlias,
   normalizePypiName,
   refTypeFromOsv,
@@ -127,9 +137,14 @@ export interface UpsertCtx {
 
 // ─── Shared constants ────────────────────────────────────────────────────────
 
-export const CHUNK_RECORDS = 1000; // records per buffer flush
-const FLUSH_INSERT_BATCH = 1000; // rows per single INSERT statement
+// Parse and flush together: one chunk lifecycle is one flush. Keeping
+// these small bounds peak event-loop occupancy per chunk so web SSR
+// and Fly health checks don't get starved during ingest.
+const PARSE_CHUNK = 50;
+const PARSE_CONCURRENCY = 2;
+const FLUSH_INSERT_BATCH = 1000; // rows per single INSERT statement (per child table)
 const PKG_CACHE_HIGH_WATER = 50_000;
+const RSS_LOG_EVERY_N_CHUNKS = 20;
 
 function cvssVersionLabel(type: string): string {
   if (type === "CVSS_V2") return "2.0";
@@ -365,4 +380,149 @@ export async function flush(buf: Buffers, db: IngestDb) {
     buf.refs.length ? flushRefs(buf.refs, db) : Promise.resolve(),
     buf.aliases.length ? flushAliases(buf.aliases, db) : Promise.resolve(),
   ]);
+}
+
+// ─── Streaming driver ────────────────────────────────────────────────────────
+
+/**
+ * Extract every non-CVE identifier from `aliases` / `upstream` / `related`
+ * plus the record id itself. Used by streamOsvDir to populate vulnAliases.
+ */
+function collectAliases(
+  rec: { id?: string; aliases?: string[]; upstream?: string[]; related?: string[] },
+  cveId: string,
+): string[] {
+  const out = new Set<string>();
+  const isCve = (s: string) => /^CVE-\d{4}-\d+$/i.test(s);
+  if (rec.id && !isCve(rec.id) && rec.id !== cveId) out.add(rec.id);
+  for (const a of rec.aliases ?? []) if (a && !isCve(a) && a !== cveId) out.add(a);
+  for (const u of rec.upstream ?? []) if (u && !isCve(u) && u !== cveId) out.add(u);
+  for (const r of rec.related ?? []) if (r && !isCve(r) && r !== cveId) out.add(r);
+  return [...out];
+}
+
+export interface StreamOsvOptions {
+  ctx: UpsertCtx;
+  extractDir: string;
+  db: IngestDb;
+  pool: IngestPool;
+  signal?: AbortSignal;
+  /**
+   * Called after each chunk completes its flush. Lets callers update
+   * job.progress (library) or console-log (CLI). Stats are cumulative
+   * across the run, not per-chunk.
+   */
+  onChunk?: (stats: { processed: number; imported: number; chunkIndex: number }) => void;
+  /**
+   * Maps a non-CVE identifier (GHSA-..., DSA-..., ALPINE-..., etc.) to
+   * a short source tag. Injected so ecosystem-specific knowledge stays
+   * at the call site and this module only handles row shapes + I/O.
+   */
+  classifyAlias: (alias: string) => string;
+  /**
+   * Optional progress logger. Defaults to noop. CLI uses console.log;
+   * library uses console.log too (goes to fly logs).
+   */
+  log?: (msg: string) => void;
+}
+
+/**
+ * Walks an extracted OSV directory, parses each *.json record, and
+ * writes it via per-chunk multi-row INSERTs. One chunk = one flush =
+ * one Buffers allocation, dropped to GC immediately after. Yields the
+ * event loop with setImmediate between chunks so concurrent work
+ * (web SSR, health checks) stays responsive.
+ *
+ * Throws if `signal?.aborted` becomes true at a chunk boundary, or if
+ * the directory iterator surfaces an error. Per-file errors (bad JSON,
+ * schema mismatch) are swallowed — the run continues.
+ *
+ * Returns cumulative `{processed, imported}` after the iterator drains.
+ */
+export async function streamOsvDir(opts: StreamOsvOptions): Promise<{
+  processed: number;
+  imported: number;
+}> {
+  const { ctx, extractDir, db, pool, signal, onChunk, classifyAlias, log } = opts;
+  const logFn = log ?? (() => {});
+
+  let processed = 0;
+  let imported = 0;
+  let chunkIndex = 0;
+  let pending: string[] = [];
+
+  const limit = pLimit(PARSE_CONCURRENCY);
+
+  async function processChunk(files: string[]) {
+    if (files.length === 0) return;
+    if (signal?.aborted) throw new Error(`aborted: osv:${ctx.eco}`);
+
+    const buf = emptyBuffers();
+    await Promise.all(
+      files.map((name) =>
+        limit(async () => {
+          try {
+            const raw = JSON.parse(await fs.readFile(join(extractDir, name), "utf8"));
+            const parsed = osvRecordSchema.safeParse(raw);
+            if (!parsed.success) return;
+            const rec = parsed.data;
+            const cveId = await bufferRecord(ctx, buf, rec, db, pool);
+            if (!cveId) return;
+            imported++;
+            for (const alias of collectAliases(rec, cveId)) {
+              pushAlias(buf, cveId, alias, classifyAlias(alias));
+            }
+          } catch {
+            /* per-record errors swallowed; aggregate metrics via callback */
+          } finally {
+            processed++;
+          }
+        }),
+      ),
+    );
+    if (buf.vulns.length || buf.aliases.length) {
+      await flush(buf, db);
+    }
+    // Best-effort unlink so /tmp doesn't bloat for the rest of the run.
+    // Failures swallowed — the outer `fs.rm(work, recursive)` mops up.
+    await Promise.all(
+      files.map((n) => fs.unlink(join(extractDir, n)).catch(() => {})),
+    );
+    maybeTrimPkgCache(ctx);
+
+    chunkIndex++;
+    onChunk?.({ processed, imported, chunkIndex });
+
+    if (chunkIndex % RSS_LOG_EVERY_N_CHUNKS === 0) {
+      const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      logFn(`[osv:${ctx.eco}] chunk=${chunkIndex} processed=${processed} imported=${imported} rss=${rss}MB`);
+    }
+
+    // Real event-loop yield. setImmediate runs after pending I/O
+    // callbacks, so web SSR and health-check handlers get a turn.
+    await new Promise((r) => setImmediate(r));
+  }
+
+  // opendir returns an async iterator. Walking it yields one Dirent at a
+  // time without materializing the full filename array in memory.
+  const dir = await fs.opendir(extractDir);
+  try {
+    for await (const dirent of dir) {
+      if (!dirent.isFile() || !dirent.name.endsWith(".json")) continue;
+      pending.push(dirent.name);
+      if (pending.length >= PARSE_CHUNK) {
+        const slice = pending;
+        pending = [];
+        await processChunk(slice);
+      }
+    }
+  } finally {
+    // opendir's iterator closes the handle on exhaustion but if we throw
+    // mid-iteration (e.g. abort) we need to explicitly close.
+    await dir.close().catch(() => {});
+  }
+  // Drain tail.
+  if (pending.length > 0) await processChunk(pending);
+
+  return { processed, imported };
 }

@@ -3,12 +3,13 @@
  *
  * Source: https://osv-vulnerabilities.storage.googleapis.com/{ecosystem}/all.zip
  *
- * This is the ops one-shot. The scheduler uses `src/lib/ingest/osv.ts`
- * which shares the same buffer/flush core via `src/lib/ingest/osv-batch.ts`.
- *
- * The CLI deliberately uses the **web pool** (no `statement_timeout`)
- * because operators running a backfill manually want to see full DB
- * errors uncapped — they're driving and can Ctrl-C if something hangs.
+ * This is the ops one-shot. Both this and the scheduler-driven
+ * `src/lib/ingest/osv.ts` are thin wrappers around
+ * `src/lib/ingest/osv-batch.ts::streamOsvDir`, so there's a single
+ * source of truth for the parse → flush loop. The CLI deliberately
+ * uses the **web pool** (no `statement_timeout`) because operators
+ * running a backfill manually want to see full DB errors uncapped —
+ * they're driving and can Ctrl-C if something hangs.
  *
  * Usage:
  *   pnpm ingest:osv -- --ecosystem=npm
@@ -16,7 +17,6 @@
  */
 import "./_shared";
 import { fetch } from "undici";
-import pLimit from "p-limit";
 import { createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -25,17 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { db, pool } from "../../src/db/client";
-import { osvRecordSchema } from "../../src/lib/osv";
-import {
-  bufferRecord,
-  emptyBuffers,
-  flush,
-  maybeTrimPkgCache,
-  CHUNK_RECORDS,
-  type Buffers,
-  type UpsertCtx,
-} from "../../src/lib/ingest/osv-batch";
-import { logProgress } from "./_shared";
+import { streamOsvDir, type UpsertCtx } from "../../src/lib/ingest/osv-batch";
 
 const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
@@ -55,6 +45,24 @@ function parseArgs() {
     process.exit(2);
   }
   return { ecos };
+}
+
+function classifyAlias(alias: string): string {
+  const a = alias.toUpperCase();
+  if (a.startsWith("GHSA-")) return "ghsa";
+  if (a.startsWith("DSA-")) return "dsa";
+  if (a.startsWith("DLA-")) return "dla";
+  if (a.startsWith("DEBIAN-")) return "debian";
+  if (a.startsWith("ALPINE-")) return "alpine";
+  if (a.startsWith("RHSA-")) return "rhsa";
+  if (a.startsWith("USN-")) return "usn";
+  if (a.startsWith("GLSA-")) return "glsa";
+  if (a.startsWith("SUSE-")) return "suse";
+  if (a.startsWith("PYSEC-")) return "pysec";
+  if (a.startsWith("RUSTSEC-")) return "rustsec";
+  if (a.startsWith("GO-")) return "goadvisory";
+  if (a.startsWith("OSV-")) return "osv-id";
+  return "other";
 }
 
 async function downloadZipToFile(url: string, dest: string): Promise<void> {
@@ -85,65 +93,31 @@ async function ingestEcosystem(ecoArg: string) {
     await extractZip(zipPath, extractDir);
     await fs.unlink(zipPath).catch(() => {});
 
-    const files = (await fs.readdir(extractDir)).filter((f) => f.endsWith(".json"));
-    console.log(`[osv:${eco}] ${files.length} JSON records on disk`);
-
     const ctx: UpsertCtx = {
       eco,
       ecoMatch: (recordEco) => canonicalizeEco(recordEco) === eco,
       pkgCache: new Map(),
     };
-    const limit = pLimit(6);
-    let processed = 0;
-    let imported = 0;
-    let skipped = 0;
-    let errored = 0;
     const startTime = Date.now();
-
-    const PARSE_CHUNK = 200;
-    let buf: Buffers = emptyBuffers();
-
-    async function maybeFlush(force: boolean) {
-      if (force || buf.recordsBuffered >= CHUNK_RECORDS) {
-        if (buf.vulns.length || buf.aliases.length) {
-          await flush(buf, db);
+    const { processed, imported } = await streamOsvDir({
+      ctx,
+      extractDir,
+      db,
+      pool,
+      classifyAlias,
+      log: (msg) => console.log(msg),
+      onChunk({ processed: p, imported: i, chunkIndex }) {
+        // Periodic CLI progress — every 10 chunks (~500 records) so the
+        // operator sees forward motion. streamOsvDir also logs rss every
+        // 20 chunks, which is more telling for debugging.
+        if (chunkIndex % 10 === 0) {
+          process.stdout.write(`\r[osv:${eco}] chunk=${chunkIndex} processed=${p} imported=${i}    `);
         }
-        buf = emptyBuffers();
-      }
-    }
-
-    for (let off = 0; off < files.length; off += PARSE_CHUNK) {
-      const slice = files.slice(off, off + PARSE_CHUNK);
-      await Promise.all(
-        slice.map((name) =>
-          limit(async () => {
-            try {
-              const raw = JSON.parse(await fs.readFile(join(extractDir, name), "utf8"));
-              const parsed = osvRecordSchema.safeParse(raw);
-              if (!parsed.success) {
-                skipped++;
-                return;
-              }
-              const cveId = await bufferRecord(ctx, buf, parsed.data, db, pool);
-              if (cveId) imported++;
-              else skipped++;
-            } catch (e) {
-              errored++;
-              if (errored < 5) console.error(`\n[osv:${eco}] ${name}:`, e);
-            } finally {
-              processed++;
-              if (processed % 1000 === 0) logProgress(`osv:${eco}`, processed, files.length);
-            }
-          }),
-        ),
-      );
-      maybeTrimPkgCache(ctx);
-      await maybeFlush(false);
-    }
-    await maybeFlush(true);
+      },
+    });
     const dt = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n[osv:${eco}] imported=${imported} skipped=${skipped} errored=${errored} (${dt}s)`);
-    return { eco, imported, skipped, errored };
+    console.log(`\n[osv:${eco}] processed=${processed} imported=${imported} (${dt}s)`);
+    return { eco, processed, imported };
   } finally {
     await fs.rm(work, { recursive: true, force: true }).catch(() => {});
   }
@@ -151,7 +125,7 @@ async function ingestEcosystem(ecoArg: string) {
 
 async function main() {
   const { ecos } = parseArgs();
-  const results: { eco: string; imported: number; skipped: number; errored: number }[] = [];
+  const results: { eco: string; processed: number; imported: number }[] = [];
   for (const e of ecos) {
     try {
       results.push(await ingestEcosystem(e));
@@ -161,7 +135,7 @@ async function main() {
   }
   console.log("---");
   for (const r of results) {
-    console.log(`  ${r.eco.padEnd(15)} imported=${r.imported} skipped=${r.skipped} errored=${r.errored}`);
+    console.log(`  ${r.eco.padEnd(15)} processed=${r.processed} imported=${r.imported}`);
   }
   const stats = await pool.query(
     `SELECT
