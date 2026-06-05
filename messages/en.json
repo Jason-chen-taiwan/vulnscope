@@ -154,7 +154,21 @@
     "noResults": "No packages match {query}",
     "addError": "Couldn't add — please try again.",
     "removeError": "Couldn't remove — please try again.",
-    "loadError": "Watchlist unavailable right now. Try refreshing in a moment."
+    "loadError": "Watchlist unavailable right now. Try refreshing in a moment.",
+    "versionLabel": "Version:",
+    "versionAny": "Any version",
+    "versionOr": "or",
+    "versionCustomPlaceholder": "e.g. 1.2.3",
+    "checking": "Checking…",
+    "checkAffected": "Currently affected by {n} CVEs ({kev} KEV)",
+    "checkClean": "✓ This version is not affected by any known CVE.",
+    "checkUnknown": "We don't have CVE data for this version yet.",
+    "anyVersionHint": "You'll be alerted on any CVE affecting any version of this package.",
+    "fixedIn": "fixed in {v}",
+    "recommendVersion": "Recommended: upgrade to {v}.",
+    "addCta": "Add to watchlist",
+    "popularHeading": "Popular packages",
+    "popularCveCount": "{n} CVEs"
   },
   "Jobs": {
     "title": "Sync jobs",

@@ -504,6 +504,84 @@ export async function getLatestCvesForPackage(
   return rows as VulnListItem[];
 }
 
+/**
+ * Distinct concrete versions OSV has on file for a (ecosystem, name)
+ * pair. Powers the version dropdown shown in the watchlist add flow.
+ *
+ * OSV records affected ranges (with `introduced` / `fixed` events)
+ * and sometimes explicit version lists. We pull both, dedupe, and
+ * return ordered DESC (newest-looking first per a loose lexical sort
+ * — semver-aware sort would be nicer but the dropdown is bounded to
+ * `limit` so the cost of mis-ordering tail entries is small).
+ *
+ * Returns [] if the package is unknown or OSV only has range data
+ * without enumerable versions. Callers should fall back to a
+ * free-text input in that case.
+ */
+export async function getPackageVersions(
+  ecosystem: string,
+  name: string,
+  limit = 40,
+): Promise<string[]> {
+  const { rows } = await pool.query<{ version: string }>(
+    `
+    WITH pkg AS (
+      SELECT id FROM packages WHERE ecosystem = $1 AND name = $2
+    ),
+    versions_from_list AS (
+      SELECT jsonb_array_elements_text(a.versions_json) AS version
+        FROM affected a
+        JOIN pkg ON pkg.id = a.package_id
+       WHERE a.versions_json IS NOT NULL
+    ),
+    versions_from_ranges AS (
+      SELECT ev->>'introduced' AS version
+        FROM affected a
+        JOIN pkg ON pkg.id = a.package_id
+       CROSS JOIN LATERAL jsonb_array_elements(a.ranges_json) AS r
+       CROSS JOIN LATERAL jsonb_array_elements(r->'events') AS ev
+       WHERE ev->>'introduced' IS NOT NULL
+         AND ev->>'introduced' <> '0'
+      UNION
+      SELECT ev->>'fixed' AS version
+        FROM affected a
+        JOIN pkg ON pkg.id = a.package_id
+       CROSS JOIN LATERAL jsonb_array_elements(a.ranges_json) AS r
+       CROSS JOIN LATERAL jsonb_array_elements(r->'events') AS ev
+       WHERE ev->>'fixed' IS NOT NULL
+    )
+    SELECT DISTINCT version
+      FROM (
+        SELECT version FROM versions_from_list
+        UNION
+        SELECT version FROM versions_from_ranges
+      ) all_versions
+     WHERE version IS NOT NULL AND version <> ''
+     ORDER BY version DESC
+     LIMIT $3
+    `,
+    [ecosystem, name, limit],
+  );
+  return rows.map((r) => r.version);
+}
+
+/**
+ * Top N recent CVEs for a (ecosystem, packageName) pair, joined with
+ * the highest CVSS severity per CVE. Returns [] if the package is
+ * unknown — callers should display a "no CVEs known yet" placeholder
+ * rather than treating it as an error.
+ *
+ * Used by the Pro tier watchlist dashboard to show "what's the latest
+ * thing I should worry about on this package" without forcing the
+ * user to navigate to the full package page.
+ *
+ * Sort: published_at DESC (most recent first), NULLs last. We
+ * deliberately don't apply the KEV-first reordering that
+ * getPackageWithCves does, because the dashboard wants "what just
+ * dropped" not "what's most exploited in history".
+ */
+// (function definition moved earlier in the file — see getLatestCvesForPackage above)
+
 // Suppress unused-import warnings in clients that don't need drizzle.
 void db;
 void sql;

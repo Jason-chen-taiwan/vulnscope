@@ -25,6 +25,8 @@ const ECOSYSTEM_ENUM = z.enum(ECOSYSTEMS);
 const PostInput = z.object({
   ecosystem: ECOSYSTEM_ENUM,
   packageName: z.string().min(1).max(255),
+  // Pin a specific version. Omit or null = "watch any version".
+  version: z.string().min(1).max(120).nullable().optional(),
 });
 
 const ACTIVE_STATUSES = new Set(["active", "trialing"]);
@@ -89,7 +91,7 @@ export async function POST(req: NextRequest) {
       first?.path.join(".") ?? undefined,
     );
   }
-  const { ecosystem, packageName } = parsed.data;
+  const { ecosystem, packageName, version } = parsed.data;
 
   // Free-tier limit. Known TOCTOU between countWatches and addWatch —
   // see comment in pro/lib/watchlist.ts for why we accept it for MVP.
@@ -105,7 +107,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { row, created } = await pro.addWatch(user.id, ecosystem, packageName);
+    const { row, created } = await pro.addWatch(
+      user.id,
+      ecosystem,
+      packageName,
+      version ?? null,
+    );
     return ok(row, { created });
   } catch (e) {
     console.error("[watchlist POST] addWatch failed:", e);

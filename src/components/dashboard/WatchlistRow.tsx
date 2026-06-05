@@ -53,10 +53,20 @@ export function WatchlistRow({ row, onRemoved }: Props) {
           href={`/package/${encodeURIComponent(row.ecosystem)}/${encodeURIComponent(
             row.packageName,
           )}`}
-          className="font-mono text-sm truncate flex-1 hover:underline"
+          className="font-mono text-sm truncate hover:underline"
         >
           {row.packageName}
         </Link>
+        {row.version ? (
+          <span className="inline-flex items-center rounded bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] px-1.5 py-0.5 text-[10px] font-mono">
+            @ {row.version}
+          </span>
+        ) : (
+          <span className="text-[10px] uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+            any
+          </span>
+        )}
+        <span className="flex-1" />
         <button
           type="button"
           aria-label={t("remove")}

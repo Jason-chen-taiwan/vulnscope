@@ -13,6 +13,7 @@ export type WatchlistRow = {
   userId: string;
   ecosystem: string;
   packageName: string;
+  version: string | null;
   lastAlertedAt: Date;
   createdAt: Date;
 };
@@ -37,6 +38,7 @@ export async function addWatch(
   _userId: string,
   _ecosystem: string,
   _packageName: string,
+  _version: string | null = null,
 ): Promise<{ row: WatchlistRow; created: boolean }> {
   throw new Error("Watchlist is not available on this build");
 }

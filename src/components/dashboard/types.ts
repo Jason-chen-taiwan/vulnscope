@@ -14,10 +14,18 @@ export interface ClientWatchlistCve {
   base_score: number | null;
 }
 
+export interface PopularPackage {
+  ecosystem: string;
+  name: string;
+  cve_count: number;
+  kev_count: number;
+}
+
 export interface ClientWatchlistRow {
   id: string;
   ecosystem: string;
   packageName: string;
+  version: string | null;
   createdAt: string;
   lastAlertedAt: string;
   latestCves: ClientWatchlistCve[];

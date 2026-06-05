@@ -1,9 +1,13 @@
 import { setRequestLocale } from "next-intl/server";
 
 import { proAuth } from "@/lib/pro-bridge";
+import { getTopPackages } from "@/lib/queries";
 import { Link } from "@/i18n/navigation";
 import { WatchlistPanel } from "@/components/dashboard/WatchlistPanel";
-import type { ClientWatchlistRow } from "@/components/dashboard/types";
+import type {
+  ClientWatchlistRow,
+  PopularPackage,
+} from "@/components/dashboard/types";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +72,7 @@ export default async function DashboardPage({
         id: r.id,
         ecosystem: r.ecosystem,
         packageName: r.packageName,
+        version: r.version,
         createdAt: r.createdAt.toISOString(),
         lastAlertedAt: r.lastAlertedAt.toISOString(),
         latestCves: r.latestCves.map((cve) => ({
@@ -85,6 +90,20 @@ export default async function DashboardPage({
     console.error("[dashboard] watchlist fetch failed:", e);
   }
   const freeLimit = pro?.FREE_WATCHLIST_LIMIT ?? 3;
+
+  // Popular suggestions for the empty state. Pull a small slice from
+  // each of the most common ecosystems — the goal is to give the
+  // user a discoverable starting point, not a comprehensive browse.
+  let popularPackages: PopularPackage[] = [];
+  try {
+    const ecosystems = ["npm", "PyPI", "Debian"];
+    const buckets = await Promise.all(
+      ecosystems.map((eco) => getTopPackages(eco, 4)),
+    );
+    popularPackages = buckets.flat();
+  } catch (e) {
+    console.error("[dashboard] popular packages fetch failed:", e);
+  }
 
   return (
     <div className="max-w-3xl mx-auto py-10 space-y-8">
@@ -162,6 +181,7 @@ export default async function DashboardPage({
         initialItems={initialItems}
         isPro={isActive}
         freeLimit={freeLimit}
+        popular={popularPackages}
       />
     </div>
   );

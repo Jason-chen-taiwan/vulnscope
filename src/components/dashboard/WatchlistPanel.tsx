@@ -7,12 +7,13 @@ import { WatchlistAddSearch } from "./WatchlistAddSearch";
 import { WatchlistRow } from "./WatchlistRow";
 import { WatchlistEmpty } from "./WatchlistEmpty";
 import { WatchlistUpsell } from "./WatchlistUpsell";
-import type { ClientWatchlistRow } from "./types";
+import type { ClientWatchlistRow, PopularPackage } from "./types";
 
 interface Props {
   initialItems: ClientWatchlistRow[];
   isPro: boolean;
   freeLimit: number;
+  popular: PopularPackage[];
 }
 
 /**
@@ -20,7 +21,12 @@ interface Props {
  * initial server-fetched data so first paint has no spinner, then
  * owns state for add/remove mutations.
  */
-export function WatchlistPanel({ initialItems, isPro, freeLimit }: Props) {
+export function WatchlistPanel({
+  initialItems,
+  isPro,
+  freeLimit,
+  popular,
+}: Props) {
   const t = useTranslations("Dashboard");
   const [items, setItems] = useState<ClientWatchlistRow[]>(initialItems);
   const [limitReached, setLimitReached] = useState(false);
@@ -64,7 +70,7 @@ export function WatchlistPanel({ initialItems, isPro, freeLimit }: Props) {
       {(limitReached || atLimit) && !isPro && <WatchlistUpsell />}
 
       {items.length === 0 ? (
-        <WatchlistEmpty />
+        <WatchlistEmpty popular={popular} />
       ) : (
         <ul className="space-y-2">
           {items.map((row) => (

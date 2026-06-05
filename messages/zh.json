@@ -154,7 +154,21 @@
     "noResults": "找不到符合 {query} 的套件",
     "addError": "加入失敗，請再試一次。",
     "removeError": "移除失敗，請再試一次。",
-    "loadError": "清單暫時無法載入，請稍後重整頁面。"
+    "loadError": "清單暫時無法載入，請稍後重整頁面。",
+    "versionLabel": "版本：",
+    "versionAny": "任意版本",
+    "versionOr": "或",
+    "versionCustomPlaceholder": "例如 1.2.3",
+    "checking": "檢查中…",
+    "checkAffected": "目前受 {n} 個 CVE 影響（{kev} 個 KEV）",
+    "checkClean": "✓ 此版本目前不受任何已知 CVE 影響。",
+    "checkUnknown": "我們尚無此版本的 CVE 資料。",
+    "anyVersionHint": "你會收到此套件任何版本的 CVE 通知。",
+    "fixedIn": "修復於 {v}",
+    "recommendVersion": "建議升級到 {v}。",
+    "addCta": "加入監控清單",
+    "popularHeading": "熱門套件",
+    "popularCveCount": "{n} 個 CVE"
   },
   "Jobs": {
     "title": "同步紀錄",
