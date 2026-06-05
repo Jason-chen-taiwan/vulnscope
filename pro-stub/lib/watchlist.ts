@@ -23,6 +23,7 @@ export type WatchlistDisplayRow = WatchlistRow & {
 };
 
 export const FREE_WATCHLIST_LIMIT = 3;
+export const PRO_WATCHLIST_LIMIT = 50;
 
 export async function getWatchlistWithSummary(
   _userId: string,

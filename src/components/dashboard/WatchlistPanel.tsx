@@ -7,12 +7,14 @@ import { WatchlistAddSearch } from "./WatchlistAddSearch";
 import { WatchlistRow } from "./WatchlistRow";
 import { WatchlistEmpty } from "./WatchlistEmpty";
 import { WatchlistUpsell } from "./WatchlistUpsell";
+import { PopularPackages } from "./PopularPackages";
 import type { ClientWatchlistRow, PopularPackage } from "./types";
 
 interface Props {
   initialItems: ClientWatchlistRow[];
   isPro: boolean;
   freeLimit: number;
+  proLimit: number;
   popular: PopularPackage[];
 }
 
@@ -25,6 +27,7 @@ export function WatchlistPanel({
   initialItems,
   isPro,
   freeLimit,
+  proLimit,
   popular,
 }: Props) {
   const t = useTranslations("Dashboard");
@@ -32,13 +35,11 @@ export function WatchlistPanel({
   const [limitReached, setLimitReached] = useState(false);
 
   const used = items.length;
-  const atLimit = !isPro && used >= freeLimit;
+  const limit = isPro ? proLimit : freeLimit;
+  const atLimit = used >= limit;
 
   function onAdded(row: ClientWatchlistRow) {
-    // Insert as first row (most recent activity wins display order
-    // until the parent's server-side sort re-runs on next refresh).
     setItems((prev) => {
-      // Idempotent guard: API may return existing row on duplicate.
       if (prev.some((r) => r.id === row.id)) return prev;
       return [row, ...prev];
     });
@@ -55,9 +56,7 @@ export function WatchlistPanel({
       <header className="flex items-baseline justify-between gap-3 flex-wrap">
         <h2 className="text-lg font-semibold">{t("watchlistTitle")}</h2>
         <span className="text-xs text-[hsl(var(--muted-foreground))]">
-          {isPro
-            ? t("usageUnlimited", { used })
-            : t("usage", { used, limit: freeLimit })}
+          {t("usage", { used, limit })}
         </span>
       </header>
 
@@ -67,10 +66,17 @@ export function WatchlistPanel({
         disabled={atLimit}
       />
 
-      {(limitReached || atLimit) && !isPro && <WatchlistUpsell />}
+      <PopularPackages popular={popular} disabled={atLimit} />
+
+      {limitReached && !isPro && <WatchlistUpsell />}
+      {limitReached && isPro && (
+        <div className="rounded-md border border-orange-500/50 bg-orange-500/10 p-3 text-xs">
+          {t("proLimitBody", { limit: proLimit })}
+        </div>
+      )}
 
       {items.length === 0 ? (
-        <WatchlistEmpty popular={popular} />
+        <WatchlistEmpty />
       ) : (
         <ul className="space-y-2">
           {items.map((row) => (

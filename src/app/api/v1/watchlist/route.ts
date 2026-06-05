@@ -50,10 +50,11 @@ export async function GET() {
 
   try {
     const items = await pro.getWatchlistWithSummary(user.id);
+    const userIsPro = isPro(user.subscriptionStatus);
     return ok(items, {
       used: items.length,
-      limit: isPro(user.subscriptionStatus) ? null : pro.FREE_WATCHLIST_LIMIT,
-      isPro: isPro(user.subscriptionStatus),
+      limit: userIsPro ? pro.PRO_WATCHLIST_LIMIT : pro.FREE_WATCHLIST_LIMIT,
+      isPro: userIsPro,
     });
   } catch (e) {
     console.error("[watchlist GET] failed:", e);
@@ -93,17 +94,22 @@ export async function POST(req: NextRequest) {
   }
   const { ecosystem, packageName, version } = parsed.data;
 
-  // Free-tier limit. Known TOCTOU between countWatches and addWatch —
+  // Tier limit. Known TOCTOU between countWatches and addWatch —
   // see comment in pro/lib/watchlist.ts for why we accept it for MVP.
-  if (!isPro(user.subscriptionStatus)) {
-    const used = await pro.countWatches(user.id);
-    if (used >= pro.FREE_WATCHLIST_LIMIT) {
-      return fail(
-        402,
-        "free_limit_reached",
-        `Free tier supports up to ${pro.FREE_WATCHLIST_LIMIT} packages. Upgrade to Pro for unlimited.`,
-      );
-    }
+  // Pro is capped too (anti-abuse + DB pool protection); the failure
+  // code is different so the UI can show a different message
+  // ("upgrade" vs "you've hit your plan's cap, contact us").
+  const userIsPro = isPro(user.subscriptionStatus);
+  const limit = userIsPro ? pro.PRO_WATCHLIST_LIMIT : pro.FREE_WATCHLIST_LIMIT;
+  const used = await pro.countWatches(user.id);
+  if (used >= limit) {
+    return fail(
+      402,
+      userIsPro ? "pro_limit_reached" : "free_limit_reached",
+      userIsPro
+        ? `Pro plan supports up to ${limit} packages. Contact support@vulnscope.dev if you need more.`
+        : `Free tier supports up to ${limit} packages. Upgrade to Pro for ${pro.PRO_WATCHLIST_LIMIT}.`,
+    );
   }
 
   try {

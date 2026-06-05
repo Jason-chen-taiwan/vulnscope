@@ -90,6 +90,7 @@ export default async function DashboardPage({
     console.error("[dashboard] watchlist fetch failed:", e);
   }
   const freeLimit = pro?.FREE_WATCHLIST_LIMIT ?? 3;
+  const proLimit = pro?.PRO_WATCHLIST_LIMIT ?? 50;
 
   // Popular suggestions for the empty state. Pull a small slice from
   // each of the most common ecosystems — the goal is to give the
@@ -181,6 +182,7 @@ export default async function DashboardPage({
         initialItems={initialItems}
         isPro={isActive}
         freeLimit={freeLimit}
+        proLimit={proLimit}
         popular={popularPackages}
       />
     </div>

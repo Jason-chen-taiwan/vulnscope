@@ -37,6 +37,7 @@ import {
   addWatch,
   removeWatch,
   FREE_WATCHLIST_LIMIT,
+  PRO_WATCHLIST_LIMIT,
   type WatchlistRow,
   type WatchlistDisplayRow,
 } from "@pro/lib/watchlist";
@@ -56,6 +57,7 @@ export type ProModule = {
   addWatch: typeof addWatch;
   removeWatch: typeof removeWatch;
   FREE_WATCHLIST_LIMIT: typeof FREE_WATCHLIST_LIMIT;
+  PRO_WATCHLIST_LIMIT: typeof PRO_WATCHLIST_LIMIT;
 };
 
 const proModule: ProModule = {
@@ -71,6 +73,7 @@ const proModule: ProModule = {
   addWatch,
   removeWatch,
   FREE_WATCHLIST_LIMIT,
+  PRO_WATCHLIST_LIMIT,
 };
 
 /**
