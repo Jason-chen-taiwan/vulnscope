@@ -3,7 +3,7 @@ import { fetch } from "undici";
 import { createGunzip } from "node:zlib";
 import { Readable } from "node:stream";
 import { createInterface } from "node:readline";
-import { pool } from "@/db/client";
+import { ingestPool } from "@/db/ingest-pool";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
 
@@ -15,14 +15,26 @@ const URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz";
 // forever. The full file is ~10 MB / 330k rows; 5 minutes is generous.
 const EPSS_TIMEOUT_MS = 5 * 60 * 1000;
 
-export async function runEpssIngest(): Promise<{ seen: number; changed: number }> {
+export interface RunEpssOptions {
+  signal?: AbortSignal;
+}
+
+export async function runEpssIngest(
+  opts?: RunEpssOptions,
+): Promise<{ seen: number; changed: number }> {
   const job = await startJob("epss");
   let processed = 0;
   let updated = 0;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(new Error("EPSS ingest timed out after 5 minutes")), EPSS_TIMEOUT_MS);
+  // Compose the orchestrator's source-level signal with the EPSS-internal
+  // 5-min fetch timeout so either can cancel the in-flight HTTP download.
+  // AbortSignal.any is Node 22+.
+  const fetchSignal = opts?.signal
+    ? AbortSignal.any([opts.signal, controller.signal])
+    : controller.signal;
   try {
-    const res = await fetch(URL, { redirect: "follow", signal: controller.signal });
+    const res = await fetch(URL, { redirect: "follow", signal: fetchSignal });
     if (!res.ok || !res.body) throw new Error(`EPSS fetch failed: ${res.status}`);
     const gunzip = createGunzip();
     const src = Readable.fromWeb(res.body as never);
@@ -63,12 +75,13 @@ export async function runEpssIngest(): Promise<{ seen: number; changed: number }
          WHERE v.cve_id = src.cve
       `;
       params.push(scoreDate ?? new Date().toISOString());
-      const r = await pool.query(sqlText, params);
+      const r = await ingestPool.query(sqlText, params);
       updated += r.rowCount ?? 0;
       batch = [];
     }
 
     for await (const line of rl) {
+      if (opts?.signal?.aborted) throw new Error("aborted: epss");
       if (line.startsWith("#")) {
         const m = line.match(/score_date:([^,\s]+)/);
         if (m) {

@@ -57,6 +57,9 @@ export async function startJob(source: string): Promise<JobHandle> {
     },
     async finish({ changed, seen, error }) {
       // Final flush of pending counts before status transition.
+      // The `status='running'` guard is first-write-wins: if the
+      // orchestrator already marked this row failed via markTimedOut()
+      // (zombie case), we no-op here instead of clobbering its decision.
       await pool.query(
         `UPDATE sync_jobs
             SET finished_at = now(),
@@ -64,11 +67,49 @@ export async function startJob(source: string): Promise<JobHandle> {
                 records_seen = $3,
                 records_changed = $4,
                 error_message = $5
-          WHERE id = $1`,
+          WHERE id = $1 AND status = 'running'`,
         [id, error ? "failed" : "success", seen ?? null, changed ?? null, error?.message ?? null],
       );
     },
   };
+}
+
+/**
+ * Mark an in-flight `running` row as `failed` from the outside (i.e.
+ * the orchestrator decided this source timed out, but the source's
+ * own JobHandle is held by a zombie task that won't return).
+ *
+ * Uses the web pool deliberately. The timeout case is exactly when
+ * the ingest pool is most likely starved (zombie holding its 3 slots),
+ * so going via the web pool ensures the failure marker actually lands.
+ *
+ * The `started_at >= since` predicate ensures we only touch the row
+ * for the current attempt, not an unrelated older zombie that's still
+ * `running` for legitimate reasons.
+ *
+ * The orchestrator's matching `markTimedOut` call runs FIRST in normal
+ * cases. If a zombie races ahead and calls finish() between our
+ * setTimeout firing and this UPDATE landing, the row will already be
+ * `success` (or `failed` with the source's own error) — and our WHERE
+ * matches 0 rows. Harmless: see "cosmetic race" comment in
+ * orchestrator.ts. The work actually completed; only RefreshResult's
+ * record of it disagrees.
+ */
+export async function markTimedOut(
+  source: string,
+  since: Date,
+  message: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE sync_jobs
+        SET status = 'failed',
+            finished_at = now(),
+            error_message = $3
+      WHERE source = $1
+        AND status = 'running'
+        AND started_at >= $2`,
+    [source, since, message],
+  );
 }
 
 export async function getRecentSyncJobs(limit = 50) {

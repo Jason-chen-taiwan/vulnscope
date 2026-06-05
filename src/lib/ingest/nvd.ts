@@ -1,6 +1,6 @@
 import "server-only";
 import { fetch } from "undici";
-import { pool } from "@/db/client";
+import { ingestPool as pool } from "@/db/ingest-pool";
 import { startJob } from "@/lib/sync-jobs";
 import { severityFromScore } from "@/lib/osv";
 
@@ -49,7 +49,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function runNvdIngest(): Promise<{ seen: number; changed: number }> {
+export interface RunNvdOptions {
+  signal?: AbortSignal;
+}
+
+export async function runNvdIngest(
+  opts?: RunNvdOptions,
+): Promise<{ seen: number; changed: number }> {
   const job = await startJob("nvd");
   let seen = 0;
   let changed = 0;
@@ -77,11 +83,13 @@ export async function runNvdIngest(): Promise<{ seen: number; changed: number }>
     // only, so we fan out one HTTP request per CVE. Sleep between to
     // respect the 5-req/30s anonymous quota.
     for (const { cve_id } of rows) {
+      if (opts?.signal?.aborted) throw new Error("aborted: nvd");
       seen += 1;
       try {
         const url = `${NVD_URL}?cveId=${encodeURIComponent(cve_id)}`;
         const res = await fetch(url, {
           headers: { "user-agent": "vulnscope-tw (https://vulnscope-tw.fly.dev)" },
+          signal: opts?.signal,
         });
         if (res.status === 404) continue; // CVE not in NVD
         if (!res.ok) {

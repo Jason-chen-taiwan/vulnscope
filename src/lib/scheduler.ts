@@ -24,6 +24,7 @@ async function getPool() {
  */
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 const STARTUP_DELAY_MS = 10 * 1000; // wait 10s after boot before first run
+const REAPER_INTERVAL_MS = 10 * 60 * 1000; // sweep stale running jobs every 10 min
 
 declare global {
   // eslint-disable-next-line no-var
@@ -110,6 +111,13 @@ export function startScheduler() {
   console.log(`[scheduler] daily refresh active (every ${intervalH}h, first run in ${STARTUP_DELAY_MS / 1000}s)`);
 
   void reapStaleJobs();
+  // Periodic reaper catches "row stuck at running because Node process
+  // exited mid-write" without waiting for a machine restart. Same SQL
+  // (>2h-old runs only), just scheduled. Per-source timeouts in
+  // orchestrator.ts also write failed rows directly via markTimedOut(),
+  // so this is the third-line safety net behind the first two
+  // (JS-level timeout + sync-jobs.finish() guard).
+  setInterval(() => void reapStaleJobs(), REAPER_INTERVAL_MS);
   // Stagger the first run so a fresh `pnpm dev` doesn't immediately spike CPU.
   setTimeout(() => {
     void tick();

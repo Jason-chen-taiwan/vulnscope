@@ -1,5 +1,5 @@
 import "server-only";
-import { pool } from "@/db/client";
+import { ingestPool as pool } from "@/db/ingest-pool";
 
 /**
  * Tiny key/value store backed by the `meta_kv` table. We use it to

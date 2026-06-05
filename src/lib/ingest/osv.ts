@@ -1,6 +1,5 @@
 import "server-only";
 import { fetch } from "undici";
-import { sql } from "drizzle-orm";
 import pLimit from "p-limit";
 import { createWriteStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
@@ -8,26 +7,27 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { db, pool } from "@/db/client";
-import { vulnerabilities, cvssScores, packages, affected, refs } from "@/db/schema";
-import {
-  osvRecordSchema,
-  pickCveAlias,
-  normalizePypiName,
-  refTypeFromOsv,
-  severityFromScore,
-  type OsvRecord,
-} from "@/lib/osv";
-import { baseScoreFromVector } from "@/lib/cvss";
+
+import { ingestDb, ingestPool } from "@/db/ingest-pool";
+import { osvRecordSchema } from "@/lib/osv";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
 import { ensureIngestSchema } from "./ensure-schema";
+import {
+  bufferRecord,
+  emptyBuffers,
+  flush,
+  maybeTrimPkgCache,
+  pushAlias,
+  CHUNK_RECORDS,
+  type Buffers,
+  type UpsertCtx,
+} from "./osv-batch";
 
 /**
  * Classify a non-CVE identifier into a source tag so the UI can group
- * by ecosystem advisory provider. The set is small and well-known —
- * everything we don't recognise falls into "other" rather than being
- * dropped (we want to surface unknowns, not silently lose data).
+ * by ecosystem advisory provider. Unknown prefixes fall to "other"
+ * rather than being dropped — we want to surface unknowns, not lose data.
  */
 function classifyAlias(alias: string): string {
   const a = alias.toUpperCase();
@@ -37,8 +37,8 @@ function classifyAlias(alias: string): string {
   if (a.startsWith("DEBIAN-")) return "debian";
   if (a.startsWith("ALPINE-")) return "alpine";
   if (a.startsWith("RHSA-")) return "rhsa";
-  if (a.startsWith("USN-")) return "usn"; // Ubuntu
-  if (a.startsWith("GLSA-")) return "glsa"; // Gentoo
+  if (a.startsWith("USN-")) return "usn";
+  if (a.startsWith("GLSA-")) return "glsa";
   if (a.startsWith("SUSE-")) return "suse";
   if (a.startsWith("PYSEC-")) return "pysec";
   if (a.startsWith("RUSTSEC-")) return "rustsec";
@@ -51,19 +51,6 @@ const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
 function canonicalizeEco(input: string): string {
   return input.split(":")[0];
-}
-
-function parseDate(s: string | undefined | null): Date | null {
-  if (!s) return null;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function cvssVersionLabel(type: string): string {
-  if (type === "CVSS_V2") return "2.0";
-  if (type === "CVSS_V3") return "3.1";
-  if (type === "CVSS_V4") return "4.0";
-  return type;
 }
 
 async function downloadZipToFile(url: string, dest: string): Promise<void> {
@@ -81,166 +68,37 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
   });
 }
 
-interface UpsertCtx {
-  eco: string;
-  ecoMatch: (recordEco: string) => boolean;
-  pkgCache: Map<string, number>;
-}
-
-async function getOrCreatePackageId(ctx: UpsertCtx, name: string): Promise<number> {
-  const normName = ctx.eco === "PyPI" ? normalizePypiName(name) : name;
-  const cacheKey = `${ctx.eco}:${normName}`;
-  const cached = ctx.pkgCache.get(cacheKey);
-  if (cached) return cached;
-  const inserted = await db
-    .insert(packages)
-    .values({ ecosystem: ctx.eco, name: normName })
-    .onConflictDoNothing({ target: [packages.ecosystem, packages.name] })
-    .returning({ id: packages.id });
-  let id: number;
-  if (inserted.length > 0) {
-    id = inserted[0].id;
-  } else {
-    const { rows } = await pool.query(
-      "SELECT id FROM packages WHERE ecosystem=$1 AND name=$2",
-      [ctx.eco, normName],
-    );
-    id = rows[0].id as number;
-  }
-  ctx.pkgCache.set(cacheKey, id);
-  return id;
-}
-
-async function processRecord(ctx: UpsertCtx, rec: OsvRecord): Promise<boolean> {
-  const cveId = pickCveAlias(rec);
-  if (!cveId) return false;
-  const publishedAt = parseDate(rec.published);
-  const modifiedAt = parseDate(rec.modified);
-
-  // Per-record incremental skip done at the SQL layer using a cheap
-  // indexed lookup: if the existing row's modified_at >= this record's,
-  // skip the entire write. We avoid loading an in-memory Map for the
-  // whole DB (which previously OOM'd the app when the table grew past
-  // ~50k rows).
-  if (modifiedAt) {
-    const existing = await pool.query<{ modified_at: Date | null }>(
-      `SELECT modified_at FROM vulnerabilities WHERE cve_id = $1`,
-      [cveId],
-    );
-    if (existing.rows.length > 0) {
-      const known = existing.rows[0].modified_at;
-      if (known && new Date(known).getTime() >= modifiedAt.getTime()) return false;
-    }
-  }
-
-  // Collect every non-CVE identifier that points at this vuln. The OSV
-  // record id itself is included when it isn't the CVE we resolved to
-  // (so GHSA-... and ALPINE-... main IDs become searchable aliases).
-  const aliasSet = new Set<string>();
-  if (rec.id && !/^CVE-\d{4}-\d+$/i.test(rec.id) && rec.id !== cveId) {
-    aliasSet.add(rec.id);
-  }
+function collectAliases(
+  rec: { id?: string; aliases?: string[]; upstream?: string[]; related?: string[] },
+  cveId: string,
+): string[] {
+  const out = new Set<string>();
+  if (rec.id && !/^CVE-\d{4}-\d+$/i.test(rec.id) && rec.id !== cveId) out.add(rec.id);
   for (const a of rec.aliases ?? []) {
-    if (a && !/^CVE-\d{4}-\d+$/i.test(a) && a !== cveId) aliasSet.add(a);
+    if (a && !/^CVE-\d{4}-\d+$/i.test(a) && a !== cveId) out.add(a);
   }
   for (const u of rec.upstream ?? []) {
-    if (u && !/^CVE-\d{4}-\d+$/i.test(u) && u !== cveId) aliasSet.add(u);
+    if (u && !/^CVE-\d{4}-\d+$/i.test(u) && u !== cveId) out.add(u);
   }
   for (const r of rec.related ?? []) {
-    if (r && !/^CVE-\d{4}-\d+$/i.test(r) && r !== cveId) aliasSet.add(r);
+    if (r && !/^CVE-\d{4}-\d+$/i.test(r) && r !== cveId) out.add(r);
   }
-
-  await db
-    .insert(vulnerabilities)
-    .values({
-      cveId,
-      sourceId: rec.id,
-      summary: rec.summary ?? null,
-      description: rec.details ?? null,
-      publishedAt,
-      modifiedAt,
-    })
-    .onConflictDoUpdate({
-      target: vulnerabilities.cveId,
-      set: {
-        sourceId: rec.id,
-        summary: sql`COALESCE(EXCLUDED.summary, ${vulnerabilities.summary})`,
-        description: sql`COALESCE(EXCLUDED.description, ${vulnerabilities.description})`,
-        publishedAt: sql`COALESCE(${vulnerabilities.publishedAt}, EXCLUDED.published_at)`,
-        modifiedAt: sql`COALESCE(EXCLUDED.modified_at, ${vulnerabilities.modifiedAt})`,
-      },
-    });
-
-  const allSeverities = [
-    ...(rec.severity ?? []),
-    ...((rec.affected ?? []).flatMap((a) => a.severity ?? [])),
-  ];
-  const seenSeverity = new Set<string>();
-  for (const s of allSeverities) {
-    const ver = cvssVersionLabel(s.type);
-    const key = `${ver}|${s.score}`;
-    if (seenSeverity.has(key)) continue;
-    seenSeverity.add(key);
-    const base = baseScoreFromVector(s.score);
-    await db
-      .insert(cvssScores)
-      .values({
-        cveId,
-        version: ver,
-        vector: s.score,
-        baseScore: base !== null ? String(base) : null,
-        severity: severityFromScore(base),
-        source: "osv",
-      })
-      .onConflictDoNothing({
-        target: [cvssScores.cveId, cvssScores.version, cvssScores.source],
-      });
-  }
-
-  for (const a of rec.affected ?? []) {
-    if (!ctx.ecoMatch(a.package.ecosystem)) continue;
-    const pkgId = await getOrCreatePackageId(ctx, a.package.name);
-    await db
-      .insert(affected)
-      .values({
-        cveId,
-        packageId: pkgId,
-        ecosystem: ctx.eco,
-        rangesJson: a.ranges ?? [],
-        versionsJson: a.versions ?? null,
-        sourceId: rec.id,
-      })
-      .onConflictDoNothing({
-        target: [affected.cveId, affected.packageId, affected.sourceId],
-      });
-  }
-
-  for (const r of rec.references ?? []) {
-    await db
-      .insert(refs)
-      .values({ cveId, url: r.url, type: refTypeFromOsv(r.type) })
-      .onConflictDoNothing({ target: [refs.cveId, refs.url] });
-  }
-
-  // Persist every non-CVE alias as a queryable identifier. ON CONFLICT
-  // covers the case where the same alias appears in multiple records
-  // (e.g. GHSA-... can show up in both the GHSA-prefixed OSV record
-  // and a related ALPINE-... record); whichever we see first wins.
-  // Cross-CVE conflicts (uq_vuln_aliases_alias) are skipped silently —
-  // OSV's own data is occasionally inconsistent and we don't want a
-  // single malformed alias to abort an entire record write.
-  for (const alias of aliasSet) {
-    await pool.query(
-      `INSERT INTO vuln_aliases (cve_id, alias, source)
-            VALUES ($1, $2, $3)
-       ON CONFLICT DO NOTHING`,
-      [cveId, alias, classifyAlias(alias)],
-    );
-  }
-  return true;
+  return [...out];
 }
 
-export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; changed: number }> {
+export interface RunOsvOptions {
+  /**
+   * Cooperative cancellation signal. Checked at each parse-chunk
+   * boundary; throws if aborted. Does NOT cancel in-flight pg queries —
+   * those are bounded by the ingest pool's `statement_timeout`.
+   */
+  signal?: AbortSignal;
+}
+
+export async function runOsvIngest(
+  ecosystem: string,
+  opts?: RunOsvOptions,
+): Promise<{ seen: number; changed: number }> {
   const eco = canonicalizeEco(ecosystem);
   await ensureIngestSchema();
   const job = await startJob(`osv:${eco}`);
@@ -259,6 +117,8 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
       await job.finish({ seen: 0, changed: 0, error: null });
       return { seen: 0, changed: 0 };
     }
+    if (opts?.signal?.aborted) throw new Error(`aborted: osv:${eco}`);
+
     const work = await fs.mkdtemp(join(tmpdir(), "osv-"));
     const zipPath = join(work, "all.zip");
     const extractDir = join(work, "json");
@@ -273,16 +133,32 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
         ecoMatch: (recordEco) => canonicalizeEco(recordEco) === eco,
         pkgCache: new Map(),
       };
-      // Concurrency 3 (down from 6) and chunk 100 (down from 200) bound
-      // peak Node heap: each in-flight record holds the file string +
-      // the parsed object + zod's intermediate value, which adds up fast
-      // on the 220k-record npm zip. The chunk boundary is also a
-      // microtask yield where V8 gets to reap.
+      // Parse concurrency 3 and parse chunk 100 bound peak Node heap:
+      // each in-flight record holds the file string + parsed object +
+      // zod's intermediate, which adds up fast on the 220k-record npm
+      // zip. The chunk boundary is also a microtask yield where V8 reaps.
       const limit = pLimit(3);
-      const CHUNK = 100;
+      const PARSE_CHUNK = 100;
       let processed = 0;
-      for (let off = 0; off < files.length; off += CHUNK) {
-        const slice = files.slice(off, off + CHUNK);
+      let buf: Buffers = emptyBuffers();
+
+      // Coordinator: buffer accumulates across multiple parse chunks
+      // until >= CHUNK_RECORDS records are in flight, then we flush.
+      // The flush boundary is independent of the parse boundary so the
+      // batched INSERT amortizes its network cost properly.
+      async function maybeFlush(force: boolean) {
+        if (force || buf.recordsBuffered >= CHUNK_RECORDS) {
+          if (buf.vulns.length || buf.aliases.length) {
+            await flush(buf, ingestDb);
+            job.progress({ seen: processed, changed: imported });
+          }
+          buf = emptyBuffers();
+        }
+      }
+
+      for (let off = 0; off < files.length; off += PARSE_CHUNK) {
+        if (opts?.signal?.aborted) throw new Error(`aborted: osv:${eco}`);
+        const slice = files.slice(off, off + PARSE_CHUNK);
         await Promise.all(
           slice.map((name) =>
             limit(async () => {
@@ -290,7 +166,13 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
                 const raw = JSON.parse(await fs.readFile(join(extractDir, name), "utf8"));
                 const parsed = osvRecordSchema.safeParse(raw);
                 if (!parsed.success) return;
-                if (await processRecord(ctx, parsed.data)) imported++;
+                const rec = parsed.data;
+                const cveId = await bufferRecord(ctx, buf, rec, ingestDb, ingestPool);
+                if (!cveId) return;
+                imported++;
+                for (const alias of collectAliases(rec, cveId)) {
+                  pushAlias(buf, cveId, alias, classifyAlias(alias));
+                }
               } catch {
                 /* per-record errors swallowed; aggregate metrics go to job row */
               } finally {
@@ -299,15 +181,14 @@ export async function runOsvIngest(ecosystem: string): Promise<{ seen: number; c
             }),
           ),
         );
-        // Surface live progress to the sync_jobs row. The handle coalesces
-        // these updates internally so we don't flood the DB.
-        job.progress({ seen: processed, changed: imported });
-        if (ctx.pkgCache.size > 50000) ctx.pkgCache.clear();
+        maybeTrimPkgCache(ctx);
+        await maybeFlush(false);
         // Yield to the event loop so V8 can reap the chunk's parsed
-        // OSV records before we load the next batch. Critical on small
-        // app machines — without this we OOM on the 220k-record zip.
+        // records before the next batch. Critical on 1GB Fly machines.
         await new Promise((r) => setImmediate(r));
       }
+      // Tail flush — the last partial buffer.
+      await maybeFlush(true);
     } finally {
       await fs.rm(work, { recursive: true, force: true }).catch(() => {});
     }

@@ -1,7 +1,7 @@
 import "server-only";
 import { fetch } from "undici";
 import { sql } from "drizzle-orm";
-import { db, pool } from "@/db/client";
+import { ingestDb, ingestPool } from "@/db/ingest-pool";
 import { vulnerabilities } from "@/db/schema";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
@@ -29,12 +29,18 @@ function parseDate(s: string | undefined | null): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-export async function runKevIngest(): Promise<{ seen: number; changed: number }> {
+export interface RunKevOptions {
+  signal?: AbortSignal;
+}
+
+export async function runKevIngest(
+  opts?: RunKevOptions,
+): Promise<{ seen: number; changed: number }> {
   const job = await startJob("kev");
   let seen = 0;
   let changed = 0;
   try {
-    const res = await fetch(KEV_URL);
+    const res = await fetch(KEV_URL, { signal: opts?.signal });
     if (!res.ok) throw new Error(`KEV fetch failed: ${res.status}`);
     const payload = (await res.json()) as KevPayload;
     seen = payload.vulnerabilities.length;
@@ -47,8 +53,9 @@ export async function runKevIngest(): Promise<{ seen: number; changed: number }>
       return { seen, changed: 0 };
     }
     for (const e of payload.vulnerabilities) {
+      if (opts?.signal?.aborted) throw new Error("aborted: kev");
       const addedAt = parseDate(e.dateAdded);
-      const r = await db
+      const r = await ingestDb
         .insert(vulnerabilities)
         .values({
           cveId: e.cveID,
@@ -84,7 +91,7 @@ if (process.argv[1]?.endsWith("ingest/kev.ts") || process.argv[1]?.endsWith("ing
   runKevIngest()
     .then((r) => {
       console.log(`[kev] seen=${r.seen} changed=${r.changed}`);
-      return pool.end();
+      return ingestPool.end();
     })
     .catch((e) => {
       console.error(e);

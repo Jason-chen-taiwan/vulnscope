@@ -1,5 +1,5 @@
 import "server-only";
-import { pool } from "@/db/client";
+import { ingestPool as pool } from "@/db/ingest-pool";
 
 /**
  * Self-healing schema migrations for ingest-side tables.
