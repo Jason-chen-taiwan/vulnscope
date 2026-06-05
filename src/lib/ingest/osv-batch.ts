@@ -26,16 +26,24 @@
  * are at most one chunk wide (cross-chunk dups resolved server-side via
  * ON CONFLICT DO NOTHING / DO UPDATE).
  *
- * Future work: stream directly from the zip via yauzl/unzipper to drop
- * the `unzip → extract → opendir` chain. Non-trivial refactor; the
- * current shape is good enough for prod under the 1GB Fly VM.
+ * Zip reading uses unzipper.Parse() — a sequential local-file-header
+ * walker over the zip byte stream. Earlier we tried yauzl (v34) with
+ * lazyEntries; the per-entry random-access seek + callback round-trip
+ * gave ~16 records/sec on Fly shared CPU. unzipper's pure sequential
+ * inflate is the right shape for the "iterate every entry of a bulk
+ * dump" job; the npm zip's 220k entries are continguous in disk order.
+ *
+ * MAL-* entries (OpenSSF malicious-package reports) get filtered at
+ * the zip layer — they never carry CVE aliases and bufferRecord would
+ * skip them anyway; we save the inflate + parse + zod cost.
  */
 import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 import pLimit from "p-limit";
-import yauzl from "yauzl";
-import type { Entry, ZipFile } from "yauzl";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import unzipper from "unzipper";
 
 import {
   vulnerabilities,
@@ -427,115 +435,55 @@ export interface StreamOsvOptions {
   log?: (msg: string) => void;
 }
 
-// ─── yauzl helpers ───────────────────────────────────────────────────────────
+// ─── unzipper helpers ────────────────────────────────────────────────────────
 
 /**
- * Promisified yauzl.open.
+ * Match by basename so a directory prefix (e.g. "json/MAL-2024-1.json")
+ * doesn't change behavior, and a path that happens to contain the
+ * substring "MAL-" elsewhere (hypothetical "ANIMAL-foo.json") isn't
+ * falsely dropped. OSV IDs always start at a path-segment boundary.
+ *
+ * MAL-* are OpenSSF malicious-package reports — they describe
+ * malicious packages, not vulnerabilities, and never carry CVE
+ * aliases. bufferRecord would skip them anyway; filtering here saves
+ * the inflate + parse + zod cost (110k+ entries on npm).
  */
-function openZip(path: string): Promise<ZipFile> {
+function skipByName(name: string): boolean {
+  const basename = name.split("/").pop() ?? name;
+  return basename.startsWith("MAL-");
+}
+
+/**
+ * Drain an unzipper entry stream into a UTF-8 string. The entry must
+ * be consumed (or autodrained) before the Parse stream emits the next
+ * one — backpressure is built into the Transform.
+ */
+function readEntryToString(entry: unzipper.Entry): Promise<string> {
   return new Promise((resolve, reject) => {
-    yauzl.open(path, { lazyEntries: true }, (err, zip) => {
-      if (err) return reject(err);
-      if (!zip) return reject(new Error("yauzl returned no zip"));
-      resolve(zip);
-    });
+    const chunks: Buffer[] = [];
+    entry.on("data", (c: Buffer) => chunks.push(c));
+    entry.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    entry.on("error", reject);
   });
 }
 
 /**
- * Wraps a yauzl ZipFile (lazyEntries: true) as an async iterator that
- * yields one Entry at a time. `readEntry()` is called from exactly one
- * place — the `next()` advance below — so double-call hangs are
- * impossible by construction, not by discipline. Both success path
- * ("entry" event) and end path ("end" event) and error path ("error"
- * event) all resolve the same pending Promise; only consumer-side
- * `next()` triggers the next `readEntry()`.
- */
-function entriesOf(zip: ZipFile): AsyncIterable<Entry> {
-  type Pending = { kind: "entry"; entry: Entry } | { kind: "end" } | { kind: "err"; err: Error };
-  let pendingResolver: ((p: Pending) => void) | null = null;
-  let queued: Pending | null = null;
-
-  function publish(p: Pending) {
-    if (pendingResolver) {
-      const r = pendingResolver;
-      pendingResolver = null;
-      r(p);
-    } else {
-      queued = p;
-    }
-  }
-
-  zip.on("entry", (entry: Entry) => publish({ kind: "entry", entry }));
-  zip.on("end", () => publish({ kind: "end" }));
-  zip.on("error", (err: Error) => publish({ kind: "err", err }));
-
-  return {
-    [Symbol.asyncIterator]() {
-      return {
-        async next(): Promise<IteratorResult<Entry>> {
-          // Pull next event. Trigger readEntry once per next() call —
-          // single source of truth for the advance.
-          const next = await new Promise<Pending>((resolve) => {
-            if (queued) {
-              const q = queued;
-              queued = null;
-              resolve(q);
-              return;
-            }
-            pendingResolver = resolve;
-            zip.readEntry();
-          });
-          if (next.kind === "end") return { done: true, value: undefined };
-          if (next.kind === "err") throw next.err;
-          return { done: false, value: next.entry };
-        },
-      };
-    },
-  };
-}
-
-/**
- * Drain a yauzl entry's read stream into a UTF-8 string. Each entry
- * stream must be fully consumed before the next entry can be requested
- * (yauzl is single-reader under lazyEntries).
- */
-function readEntryContent(zip: ZipFile, entry: Entry): Promise<string> {
-  return new Promise((resolve, reject) => {
-    zip.openReadStream(entry, (err, stream) => {
-      if (err) return reject(err);
-      if (!stream) return reject(new Error(`openReadStream returned no stream for ${entry.fileName}`));
-      const chunks: Buffer[] = [];
-      stream.on("data", (c: Buffer) => chunks.push(c));
-      stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      stream.on("error", reject);
-    });
-  });
-}
-
-function closeZip(zip: ZipFile): void {
-  try {
-    zip.close();
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * Streams entries directly out of an OSV bulk-download zip, parses
- * each *.json record, and writes via per-chunk multi-row INSERTs.
+ * Streams entries directly out of an OSV bulk-download zip via
+ * unzipper.Parse() (sequential local-file-header walker), parses each
+ * *.json record, and writes via per-chunk multi-row INSERTs.
  *
  * One chunk = one Buffers allocation + one flush, dropped to GC and
  * setImmediate-yielded immediately after. Flat memory profile, keeps
  * the event loop responsive for web SSR and Fly health checks.
  *
- * No extraction to disk: yauzl decompresses each entry directly into
- * a memory buffer. Eliminates the 22-minute `unzip` stage that killed
- * npm ingest in v33.
+ * MAL-* entries are filtered at the zip layer (basename startsWith
+ * "MAL-") so we don't pay inflate + parse cost for records that
+ * bufferRecord would skip anyway.
  *
- * Throws if `signal?.aborted` becomes true at a chunk boundary or if
- * yauzl surfaces an error. Per-record errors (bad JSON, schema
- * mismatch) are swallowed.
+ * Throws if `signal?.aborted` becomes true (checked every 500 entries
+ * — chunk boundary is too coarse when 100k+ consecutive MAL-* entries
+ * all hit the skip branch) or if the zip / fs layer surfaces an error.
+ * Per-record errors (bad JSON, schema mismatch) are swallowed.
  */
 export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
   processed: number;
@@ -547,6 +495,9 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
   let processed = 0;
   let imported = 0;
   let chunkIndex = 0;
+  let totalSeen = 0;
+  let skipped = 0;
+  let loggedFirstEntryPath = false;
   type Pending = { name: string; content: string };
   let pending: Pending[] = [];
 
@@ -589,7 +540,9 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
 
     if (chunkIndex % RSS_LOG_EVERY_N_CHUNKS === 0) {
       const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
-      logFn(`[osv:${ctx.eco}] chunk=${chunkIndex} processed=${processed} imported=${imported} rss=${rss}MB`);
+      logFn(
+        `[osv:${ctx.eco}] chunk=${chunkIndex} processed=${processed} imported=${imported} skipped=${skipped} rss=${rss}MB`,
+      );
     }
 
     // Real event-loop yield. setImmediate runs after pending I/O
@@ -597,15 +550,47 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
     await new Promise((r) => setImmediate(r));
   }
 
-  const zip = await openZip(zipPath);
+  const fileStream = createReadStream(zipPath);
+  const parseStream = unzipper.Parse({ forceStream: true });
+
+  // pipeline() not pipe(): Node's stream .pipe() does not forward
+  // error events from upstream to downstream. A read failure on
+  // fileStream would leave parseStream orphaned and the for-await
+  // would hang until orchestrator's 15-min timeout fired, masking the
+  // real error as a "slow ingest" symptom.
+  const pipelinePromise = pipeline(fileStream, parseStream);
+
   try {
-    for await (const entry of entriesOf(zip)) {
-      // Filter on fileName BEFORE opening a stream — we never want an
-      // open stream we don't drain (yauzl is single-reader; an
-      // abandoned stream wedges the iterator).
-      if (!entry.fileName.endsWith(".json")) continue;
-      const content = await readEntryContent(zip, entry);
-      pending.push({ name: entry.fileName, content });
+    for await (const rawEntry of parseStream) {
+      const entry = rawEntry as unzipper.Entry;
+      totalSeen++;
+
+      // Signal + setImmediate yield run on TOTAL entry count, NOT
+      // chunk count. npm zip has 100k+ consecutive MAL-* entries that
+      // all hit the skip branch — without this, an abort request
+      // waits until the next non-skipped chunk lands, which could be
+      // minutes away.
+      if (totalSeen % 500 === 0) {
+        if (signal?.aborted) throw new Error(`aborted: osv:${ctx.eco}`);
+        await new Promise((r) => setImmediate(r));
+      }
+
+      if (entry.type !== "File") {
+        await entry.autodrain().promise();
+        skipped++;
+        continue;
+      }
+      if (skipByName(entry.path)) {
+        await entry.autodrain().promise();
+        skipped++;
+        continue;
+      }
+      if (!loggedFirstEntryPath) {
+        loggedFirstEntryPath = true;
+        logFn(`[osv:${ctx.eco}] entry-path-sample=${entry.path}`);
+      }
+      const content = await readEntryToString(entry);
+      pending.push({ name: entry.path, content });
       if (pending.length >= PARSE_CHUNK) {
         const slice = pending;
         pending = [];
@@ -613,10 +598,22 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
       }
     }
     if (pending.length > 0) await processChunk(pending);
-  } finally {
-    closeZip(zip);
+    await pipelinePromise; // surface any late pipeline error
+  } catch (err) {
+    // Destroy both streams so file handles release immediately.
+    fileStream.destroy();
+    parseStream.destroy();
+    // pipelinePromise will reject with ERR_STREAM_PREMATURE_CLOSE now
+    // that we destroyed the streams. Nothing is awaiting it on this
+    // path; swallow to prevent an unhandled rejection that would
+    // crash the Next.js process (Node 15+ default behavior).
+    pipelinePromise.catch(() => {});
+    throw err;
   }
 
+  logFn(
+    `[osv:${ctx.eco}] done totalSeen=${totalSeen} skipped=${skipped} processed=${processed} imported=${imported}`,
+  );
   return { processed, imported };
 }
 
