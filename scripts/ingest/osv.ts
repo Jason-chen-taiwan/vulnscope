@@ -3,14 +3,21 @@
  *
  * Source: https://osv-vulnerabilities.storage.googleapis.com/{ecosystem}/all.zip
  *
- * For Phase 0 we only care about CVE-keyed records. For each JSON in the zip:
+ * Phase 0: CVE-keyed records only. For each JSON in the zip:
  *   - find the CVE alias; skip if none
  *   - upsert vulnerabilities row (don't overwrite kev / kev_added_at)
  *   - insert cvss_scores from severity[]
  *   - upsert each affected package and insert an `affected` row keyed on
  *     (cve_id, package_id, source_id) so OSV records that mention the same
- *     package multiple times don't duplicate.
+ *     package multiple times don't duplicate
  *   - upsert refs
+ *
+ * Performance: rather than one INSERT per record per child-table (which gave
+ * us ~2.2M sequential round-trips for npm and a 40-minute run that fly's
+ * boot-reaper killed), we buffer per chunk and emit multi-row INSERTs
+ * (vulns / cvss / affected / refs). Same upsert semantics, ~100× fewer
+ * round-trips. packages still uses single-row upsert because we need the
+ * generated id immediately to put into the `affected` buffer.
  *
  * Usage:
  *   pnpm ingest:osv -- --ecosystem=npm
@@ -37,16 +44,11 @@ import {
   type OsvRecord,
 } from "../../src/lib/osv";
 import { baseScoreFromVector } from "../../src/lib/cvss";
-import { done, logProgress, parseDate } from "./_shared";
+import { logProgress, parseDate } from "./_shared";
 
-// OSV bulk-download base. Any ecosystem name listed at
-// https://osv-vulnerabilities.storage.googleapis.com/ can be passed in.
-// We canonicalize Debian:NN / Ubuntu:NN / Alpine:vX.Y to their base name
-// for `packages.ecosystem` so the same package across distros consolidates.
 const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
 function canonicalizeEco(input: string): string {
-  // Strip per-version suffix: "Debian:12" -> "Debian", "Alpine:v3.18" -> "Alpine"
   return input.split(":")[0];
 }
 
@@ -73,7 +75,7 @@ async function downloadZipToFile(url: string, dest: string): Promise<void> {
 
 async function extractZip(zipPath: string, destDir: string): Promise<void> {
   await fs.mkdir(destDir, { recursive: true });
-  // Use system unzip — adm-zip / inflate-in-process blows up on the 200MB npm zip.
+  // System unzip; in-process inflate OOMs on the 200MB npm zip.
   await new Promise<void>((resolve, reject) => {
     const child = spawn("unzip", ["-q", "-o", zipPath, "-d", destDir], { stdio: "inherit" });
     child.on("error", reject);
@@ -86,16 +88,69 @@ function extractBaseScore(vec: string): number | null {
 }
 
 function cvssVersionLabel(type: string): string {
-  // OSV severity types: CVSS_V2 / CVSS_V3 / CVSS_V4
   if (type === "CVSS_V2") return "2.0";
-  if (type === "CVSS_V3") return "3.1"; // OSV doesn't distinguish v3.0 vs v3.1; assume 3.1
+  if (type === "CVSS_V3") return "3.1";
   if (type === "CVSS_V4") return "4.0";
   return type;
 }
 
+// ─── Buffer types ────────────────────────────────────────────────────────────
+
+type VulnRow = {
+  cveId: string;
+  sourceId: string;
+  summary: string | null;
+  description: string | null;
+  publishedAt: Date | null;
+  modifiedAt: Date | null;
+};
+type CvssRow = {
+  cveId: string;
+  version: string;
+  vector: string;
+  baseScore: string | null;
+  severity: string | null;
+};
+type AffectedRow = {
+  cveId: string;
+  packageId: number;
+  ecosystem: string;
+  rangesJson: unknown;
+  versionsJson: unknown;
+  sourceId: string;
+};
+type RefRow = { cveId: string; url: string; type: string | null };
+
+interface Buffers {
+  vulns: VulnRow[];
+  cvss: CvssRow[];
+  affected: AffectedRow[];
+  refs: RefRow[];
+  // In-buffer dedup keys so a multi-row INSERT doesn't trip ON CONFLICT
+  // against its own rows (Postgres can't deduplicate within a single
+  // statement; the upsert target needs unique keys).
+  vulnSeen: Map<string, number>; // cveId → index into vulns[]
+  cvssSeen: Set<string>; // `${cveId}|${version}|osv`
+  affectedSeen: Set<string>; // `${cveId}|${packageId}|${sourceId}`
+  refsSeen: Set<string>; // `${cveId}|${url}`
+}
+
+function emptyBuffers(): Buffers {
+  return {
+    vulns: [],
+    cvss: [],
+    affected: [],
+    refs: [],
+    vulnSeen: new Map(),
+    cvssSeen: new Set(),
+    affectedSeen: new Set(),
+    refsSeen: new Set(),
+  };
+}
+
 interface UpsertCtx {
-  eco: string; // canonical (e.g. "Debian", "npm")
-  ecoMatch: (recordEco: string) => boolean; // accepts "Debian:12" when ctx.eco = "Debian"
+  eco: string;
+  ecoMatch: (recordEco: string) => boolean;
   pkgCache: Map<string, number>;
 }
 
@@ -123,94 +178,157 @@ async function getOrCreatePackageId(ctx: UpsertCtx, name: string): Promise<numbe
   return id;
 }
 
-async function processRecord(ctx: UpsertCtx, rec: OsvRecord) {
+// ─── Record → buffer (no DB writes for child rows) ───────────────────────────
+
+async function bufferRecord(ctx: UpsertCtx, buf: Buffers, rec: OsvRecord): Promise<boolean> {
   const cveId = pickCveAlias(rec);
-  if (!cveId) return false; // Phase 0: CVE-keyed only
+  if (!cveId) return false;
 
   const publishedAt = parseDate(rec.published);
   const modifiedAt = parseDate(rec.modified);
-  // Upsert vulnerability. Don't ever overwrite KEV fields.
-  await db
-    .insert(vulnerabilities)
-    .values({
-      cveId,
-      sourceId: rec.id,
-      summary: rec.summary ?? null,
-      description: rec.details ?? null,
-      publishedAt,
-      modifiedAt,
-    })
-    .onConflictDoUpdate({
-      target: vulnerabilities.cveId,
-      set: {
-        sourceId: rec.id,
-        summary: sql`COALESCE(EXCLUDED.summary, ${vulnerabilities.summary})`,
-        description: sql`COALESCE(EXCLUDED.description, ${vulnerabilities.description})`,
-        publishedAt: sql`COALESCE(${vulnerabilities.publishedAt}, EXCLUDED.published_at)`,
-        modifiedAt: sql`COALESCE(EXCLUDED.modified_at, ${vulnerabilities.modifiedAt})`,
-      },
-    });
 
-  // CVSS scores (record-level + per-affected-entry)
+  // If the same CVE shows up twice within one buffer flush, keep the latest
+  // values (matches the COALESCE-on-conflict semantics of the row-by-row
+  // path: later writes win for non-null fields).
+  const existingIdx = buf.vulnSeen.get(cveId);
+  const newVuln: VulnRow = {
+    cveId,
+    sourceId: rec.id,
+    summary: rec.summary ?? null,
+    description: rec.details ?? null,
+    publishedAt,
+    modifiedAt,
+  };
+  if (existingIdx !== undefined) {
+    buf.vulns[existingIdx] = newVuln;
+  } else {
+    buf.vulnSeen.set(cveId, buf.vulns.length);
+    buf.vulns.push(newVuln);
+  }
+
+  // CVSS — flatten record-level + per-affected severity; dedupe by (cveId, version, source)
   const allSeverities = [
     ...(rec.severity ?? []),
     ...((rec.affected ?? []).flatMap((a) => a.severity ?? [])),
   ];
-  const seenSeverity = new Set<string>();
+  const seenInRec = new Set<string>(); // (cveId, version) within this record — earlier vector wins
   for (const s of allSeverities) {
     const ver = cvssVersionLabel(s.type);
-    const key = `${ver}|${s.score}`;
-    if (seenSeverity.has(key)) continue;
-    seenSeverity.add(key);
+    const inRecKey = `${cveId}|${ver}`;
+    if (seenInRec.has(inRecKey)) continue;
+    seenInRec.add(inRecKey);
+    const dedupeKey = `${cveId}|${ver}|osv`;
+    if (buf.cvssSeen.has(dedupeKey)) continue;
+    buf.cvssSeen.add(dedupeKey);
     const base = extractBaseScore(s.score);
-    await db
-      .insert(cvssScores)
-      .values({
-        cveId,
-        version: ver,
-        vector: s.score,
-        baseScore: base !== null ? String(base) : null,
-        severity: severityFromScore(base),
-        source: "osv",
-      })
-      .onConflictDoNothing({
-        target: [cvssScores.cveId, cvssScores.version, cvssScores.source],
-      });
+    buf.cvss.push({
+      cveId,
+      version: ver,
+      vector: s.score,
+      baseScore: base !== null ? String(base) : null,
+      severity: severityFromScore(base),
+    });
   }
 
-  // Affected packages
+  // Affected packages (still needs package_id resolution → one RT per
+  // distinct package, but cached aggressively).
   for (const a of rec.affected ?? []) {
     if (!ctx.ecoMatch(a.package.ecosystem)) continue;
     const pkgId = await getOrCreatePackageId(ctx, a.package.name);
-    await db
-      .insert(affected)
-      .values({
-        cveId,
-        packageId: pkgId,
-        ecosystem: ctx.eco,
-        rangesJson: a.ranges ?? [],
-        versionsJson: a.versions ?? null,
-        sourceId: rec.id,
-      })
-      .onConflictDoNothing({
-        target: [affected.cveId, affected.packageId, affected.sourceId],
-      });
+    const dedupeKey = `${cveId}|${pkgId}|${rec.id}`;
+    if (buf.affectedSeen.has(dedupeKey)) continue;
+    buf.affectedSeen.add(dedupeKey);
+    buf.affected.push({
+      cveId,
+      packageId: pkgId,
+      ecosystem: ctx.eco,
+      rangesJson: a.ranges ?? [],
+      versionsJson: a.versions ?? null,
+      sourceId: rec.id,
+    });
   }
 
-  // References
+  // References (PK = cveId, url)
   for (const r of rec.references ?? []) {
-    await db
-      .insert(refs)
-      .values({ cveId, url: r.url, type: refTypeFromOsv(r.type) })
-      .onConflictDoNothing({ target: [refs.cveId, refs.url] });
+    const dedupeKey = `${cveId}|${r.url}`;
+    if (buf.refsSeen.has(dedupeKey)) continue;
+    buf.refsSeen.add(dedupeKey);
+    buf.refs.push({ cveId, url: r.url, type: refTypeFromOsv(r.type) });
   }
   return true;
 }
 
+// ─── Flush buffers (one multi-row INSERT per table per flush) ────────────────
+
+const FLUSH_INSERT_BATCH = 1000; // rows per single INSERT statement
+
+async function flushVulns(rows: VulnRow[]) {
+  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
+    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
+    await db
+      .insert(vulnerabilities)
+      .values(slice)
+      .onConflictDoUpdate({
+        target: vulnerabilities.cveId,
+        set: {
+          sourceId: sql`EXCLUDED.source_id`,
+          summary: sql`COALESCE(EXCLUDED.summary, ${vulnerabilities.summary})`,
+          description: sql`COALESCE(EXCLUDED.description, ${vulnerabilities.description})`,
+          publishedAt: sql`COALESCE(${vulnerabilities.publishedAt}, EXCLUDED.published_at)`,
+          modifiedAt: sql`COALESCE(EXCLUDED.modified_at, ${vulnerabilities.modifiedAt})`,
+        },
+      });
+  }
+}
+
+async function flushCvss(rows: CvssRow[]) {
+  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
+    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
+    await db
+      .insert(cvssScores)
+      .values(slice.map((r) => ({ ...r, source: "osv" })))
+      .onConflictDoNothing({
+        target: [cvssScores.cveId, cvssScores.version, cvssScores.source],
+      });
+  }
+}
+
+async function flushAffected(rows: AffectedRow[]) {
+  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
+    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
+    await db
+      .insert(affected)
+      .values(slice)
+      .onConflictDoNothing({
+        target: [affected.cveId, affected.packageId, affected.sourceId],
+      });
+  }
+}
+
+async function flushRefs(rows: RefRow[]) {
+  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
+    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
+    await db
+      .insert(refs)
+      .values(slice)
+      .onConflictDoNothing({ target: [refs.cveId, refs.url] });
+  }
+}
+
+async function flush(buf: Buffers) {
+  // Order matters: vulns first (other tables FK to cveId).
+  if (buf.vulns.length) await flushVulns(buf.vulns);
+  // The next three are independent of each other; parallelize.
+  await Promise.all([
+    buf.cvss.length ? flushCvss(buf.cvss) : Promise.resolve(),
+    buf.affected.length ? flushAffected(buf.affected) : Promise.resolve(),
+    buf.refs.length ? flushRefs(buf.refs) : Promise.resolve(),
+  ]);
+}
+
+// ─── Driver ──────────────────────────────────────────────────────────────────
+
 async function ingestEcosystem(ecoArg: string) {
-  // ecoArg may be either the bucket prefix ("Debian", "Alpine") or include a
-  // version suffix that we'll strip for the `packages.ecosystem` value but
-  // pass through to the URL.
   const eco = canonicalizeEco(ecoArg);
   const url = `${BASE_URL}/${encodeURIComponent(ecoArg)}/all.zip`;
   const work = await fs.mkdtemp(join(tmpdir(), "osv-"));
@@ -230,6 +348,8 @@ async function ingestEcosystem(ecoArg: string) {
       ecoMatch: (recordEco) => canonicalizeEco(recordEco) === eco,
       pkgCache: new Map(),
     };
+    // Concurrency only for the read+parse+pkg-resolve phase — buffer writes
+    // and flushes are sequential to keep ordering predictable.
     const limit = pLimit(6);
     let processed = 0;
     let imported = 0;
@@ -237,9 +357,13 @@ async function ingestEcosystem(ecoArg: string) {
     let errored = 0;
     const startTime = Date.now();
 
-    const CHUNK = 200;
+    const CHUNK = 1000; // records per buffer flush
     for (let off = 0; off < files.length; off += CHUNK) {
       const slice = files.slice(off, off + CHUNK);
+      const buf = emptyBuffers();
+      // Buffer is shared across parallel readers — bufferRecord is async
+      // because pkg lookup may hit DB, but all buffer mutations are
+      // synchronous JS so there's no interleave concern between awaits.
       await Promise.all(
         slice.map((name) =>
           limit(async () => {
@@ -250,7 +374,7 @@ async function ingestEcosystem(ecoArg: string) {
                 skipped++;
                 return;
               }
-              const ok = await processRecord(ctx, parsed.data);
+              const ok = await bufferRecord(ctx, buf, parsed.data);
               if (ok) imported++;
               else skipped++;
             } catch (e) {
@@ -258,11 +382,15 @@ async function ingestEcosystem(ecoArg: string) {
               if (errored < 5) console.error(`\n[osv:${eco}] ${name}:`, e);
             } finally {
               processed++;
-              if (processed % 1000 === 0) logProgress(`osv:${eco}`, processed, files.length);
+              if (processed % 5000 === 0) logProgress(`osv:${eco}`, processed, files.length);
             }
           }),
         ),
       );
+      // Flush this chunk's buffer. Failures here surface as an exception
+      // and abort the whole ecosystem (matching old behaviour — partial
+      // ingest is fine, we re-sync from scratch on the next run anyway).
+      await flush(buf);
       if (ctx.pkgCache.size > 50000) ctx.pkgCache.clear();
     }
     const dt = ((Date.now() - startTime) / 1000).toFixed(1);
