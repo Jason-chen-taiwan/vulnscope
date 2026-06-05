@@ -113,9 +113,9 @@ export default async function LocaleLayout({
               <Link href="/packages" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("packages")}</Link>
               <Link href={{ pathname: "/search", query: { kev: "true" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("kev")}</Link>
               <Link href={{ pathname: "/search", query: { severity: "CRITICAL" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("critical")}</Link>
-              <Link href="/insights" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">Insights</Link>
+              <Link href="/insights" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("insights")}</Link>
               <Link href="/admin/jobs" className="text-sm text-[hsl(var(--muted-foreground))] no-underline" title={t("jobsTitle")}>{t("jobs")}</Link>
-              <Link href="/pricing" className="text-sm font-medium no-underline">Pricing</Link>
+              <Link href="/pricing" className="text-sm font-medium no-underline">{t("pricing")}</Link>
               <span className="ml-auto flex items-center gap-3">
                 <LangSwitcher />
                 <AuthHeaderWidget />

@@ -11,7 +11,9 @@
     "jobs": "Jobs",
     "jobsTitle": "Data refresh status",
     "searchPlaceholder": "Search CVE-ID, package, vendor, keyword…",
-    "language": "Language"
+    "language": "Language",
+    "insights": "Insights",
+    "pricing": "Pricing"
   },
   "Footer": {
     "dataFrom": "Data from {osv}, {kev}, and {epss}.",

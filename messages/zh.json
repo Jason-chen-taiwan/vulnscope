@@ -11,7 +11,9 @@
     "jobs": "同步紀錄",
     "jobsTitle": "資料更新狀態",
     "searchPlaceholder": "搜尋 CVE-ID、套件名、廠商、關鍵字…",
-    "language": "語言"
+    "language": "語言",
+    "insights": "深度報告",
+    "pricing": "方案"
   },
   "Footer": {
     "dataFrom": "資料來自 {osv}、{kev} 與 {epss}。",
@@ -193,7 +195,8 @@
       "f2": "可追蹤最多 3 個套件（需登入）",
       "f3": "可釘選特定版本，查看真正影響該版本的 CVE",
       "f4": "CLI 連到公開 API（有流量限制）",
-      "f5": "RSS 訂閱"
+      "f5": "RSS 訂閱",
+      "cta": "登入即可開始 →"
     },
     "pro": {
       "name": "Pro",
