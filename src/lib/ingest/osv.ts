@@ -150,7 +150,6 @@ export async function runOsvIngest(
         if (force || buf.recordsBuffered >= CHUNK_RECORDS) {
           if (buf.vulns.length || buf.aliases.length) {
             await flush(buf, ingestDb);
-            job.progress({ seen: processed, changed: imported });
           }
           buf = emptyBuffers();
         }
@@ -183,6 +182,10 @@ export async function runOsvIngest(
         );
         maybeTrimPkgCache(ctx);
         await maybeFlush(false);
+        // Surface live progress to the sync_jobs row. The handle
+        // coalesces these (max one UPDATE per second) so even calling
+        // every parse chunk doesn't flood the DB.
+        job.progress({ seen: processed, changed: imported });
         // Yield to the event loop so V8 can reap the chunk's parsed
         // records before the next batch. Critical on 1GB Fly machines.
         await new Promise((r) => setImmediate(r));
