@@ -13,7 +13,18 @@ declare global {
 
 export const pool =
   globalThis.__pgPool ??
-  new Pool({ connectionString, max: 10 });
+  new Pool({
+    connectionString,
+    max: 10,
+    // TCP keepalive every ~10s. Fly Postgres closes idle connections
+    // silently; without keepalive, the next SSR query mid-render could
+    // hit a dead socket and throw "Connection terminated unexpectedly",
+    // which Next.js surfaces as a 5xx and Fly health check sees as
+    // unhealthy. Keepalive packets keep the kernel-level socket open
+    // between request bursts. Same fix already in ingest-pool.ts.
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+  });
 
 // CRITICAL: pg Pool emits 'error' when an idle client's connection is
 // terminated by the server (Fly Postgres maintenance, idle timeouts,
