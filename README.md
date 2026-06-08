@@ -92,30 +92,32 @@ runs upsert only the records whose `modified` actually advanced.
 #### Reliability
 
 A full OSV refresh runs for an hour or two and touches every record
-in every zip. Six layered safety nets keep a misbehaving upstream,
+in every zip. Seven layered safety nets keep a misbehaving upstream,
 a network blip, a runaway ingest, or a hostile client from breaking
 the user-facing web tier:
 
-- **Web / worker process split.** Two Fly process groups share one
-  Docker image: the `web` group runs Next.js only, the `worker` group
-  runs the scheduler + ingest only. `PROCESS_ROLE` env (set per group
-  in `fly.toml`) decides which side of `src/instrumentation-node.ts`
-  boots. ingest hogging the event loop for a 1 – 3 s parse-and-flush
-  chunk can't stall HTTP request handling because they're literally
-  different Node processes. Manual `POST /api/v1/admin/refresh`
+- **Web / worker process split.** Two Node processes share one Docker
+  image: the `web` process runs Next.js only, the `worker` process
+  runs the scheduler + ingest only. `PROCESS_ROLE` env decides which
+  side of `src/instrumentation-node.ts` boots. Ingest hogging the
+  event loop for a 1 – 3 s parse-and-flush chunk can't stall HTTP
+  request handling because they're literally different Node
+  processes — deploy them as separate containers / process groups /
+  systemd units, doesn't matter. Manual `POST /api/v1/admin/refresh`
   returns 503 in this mode (the web process has no scheduler to call);
   daily auto-refresh on the worker is the only trigger.
 - **Heartbeat-based source timeout.** Each `JobHandle.progress()`
   flush updates `sync_jobs.last_heartbeat_at`. The orchestrator polls
   this column every 30 s and aborts a source only if no heartbeat for
   5 min — so a legitimately-slow npm ingest runs for as long as it
-  needs to (we've seen 90+ min on Fly shared CPU), but a truly
-  hung HTTP fetch dies fast. Replaces the old wall-clock timeout,
-  which kept killing healthy sources just because the ecosystem was
-  large. A 4 h absolute cap is retained as a paranoid backstop.
+  needs to (we've seen 90+ min on small shared-CPU instances), but a
+  truly hung HTTP fetch dies fast. Replaces the old wall-clock
+  timeout, which kept killing healthy sources just because the
+  ecosystem was large. A 4 h absolute cap is retained as a paranoid
+  backstop.
 - **Per-pool `'error'` listeners + TCP keepalive.** Managed Postgres
-  (Fly / RDS / Supabase / Neon) closes idle connections after a few
-  minutes. Without a listener, pg.Pool's `'error'` event escalates to
+  providers close idle connections after a few minutes. Without a
+  listener, pg.Pool's `'error'` event escalates to
   `uncaughtException` and crashes the entire Node process — one idle
   drop would take down 15 in-flight ingests at once (we hit this in
   production). The pool listener acknowledges the event so pg can
@@ -124,28 +126,35 @@ the user-facing web tier:
   Both the web pool (`src/db/client.ts`) and the ingest pool
   (`src/db/ingest-pool.ts`) carry the listener — early versions only
   had it on ingest and an idle drop took down SSR.
-- **Orchestrator watchdog.** Even if every per-source heartbeat
-  check fails, the scheduler force-releases its in-flight flag and
-  marks the `refresh` sync_jobs row failed after 3 hours.
-- **Stale-job reaper.** Every 10 min (and on boot), any `sync_jobs`
-  row whose `last_heartbeat_at` hasn't moved in 5 min gets
-  reclassified as `failed (reaped)`. Excludes `source='refresh'`,
-  which is the orchestrator wrapper and doesn't heartbeat itself.
-  Heartbeat-based (not started_at-based) so a process crash during
-  ingest gets cleaned up in minutes instead of the next reboot.
+- **Orchestrator watchdog + boot-time orphan cleanup.** Even if every
+  per-source heartbeat check fails, the scheduler force-releases its
+  in-flight flag and marks the `refresh` sync_jobs row failed after
+  3 h. **At worker boot**, every `running` refresh row is cleared
+  unconditionally — the in-memory `__vulnscope_refresh_in_flight` flag
+  just reset, so any row still marked running is by definition an
+  orphan from the previous process. Without this, a worker crash leaves
+  `shouldSkipScheduled()` permanently refusing future ticks
+  (observed: 3 stuck refresh rows from earlier process deaths blocking
+  the daily scheduler for hours).
+- **Stale-job reaper.** Every 10 min (and on boot), two passes run:
+  child sources (kev, osv:\*, epss, nvd, exploits) get reclassified as
+  `failed (reaped)` if `last_heartbeat_at` hasn't moved in 5 min;
+  refresh rows get reaped after 3 h (matching the watchdog). Different
+  thresholds because they have different liveness signals — the
+  refresh wrapper doesn't heartbeat itself.
 - **Per-route rate limiting on every public HTTP path.** Token-bucket
   limiter in `src/lib/rate-limit.ts` protects API routes, SSR pages,
-  RSS feeds, and the sitemap. Cloudflare in front of
-  `vulnscope-tw.fly.dev` blocks volumetric attacks at the edge, but
-  attackers can bypass to the `.fly.dev` domain directly — without
-  app-layer limits, one `curl /zh/search?q=foo` loop saturated the
-  512 MB Postgres machine. Identity precedence is `signed-in user >
-  CF-Connecting-IP > Fly-Client-IP > X-Forwarded-For`. Signed-in users
-  get 3× capacity. Coverage is layered:
+  RSS feeds, and the sitemap. A CDN in front of the domain blocks
+  volumetric attacks at the edge, but attackers can bypass to the
+  origin directly — without app-layer limits, one
+  `curl /zh/search?q=foo` loop saturated the small Postgres instance.
+  Identity precedence is `signed-in user > CF-Connecting-IP >
+  Fly-Client-IP > X-Forwarded-For`. Signed-in users get 3× capacity.
+  Coverage is layered:
     - **API routes**: per-route `withRateLimit(bucket, handler)` HOF.
-      Buckets are tight on the expensive shapes (`autocomplete`
-      60/min, `check_batch` 10/min, `auth` 10/min — the
-      credential-stuffing target).
+      Tight buckets on the expensive shapes (`autocomplete` 60/min,
+      `check_batch` 10/min, `auth` 10/min — the credential-stuffing
+      target).
     - **SSR pages** (`/zh/**`, `/en/**`): `src/middleware.ts` checks
       a path-dispatched bucket BEFORE next-intl runs. Cheap pages
       (`page_view` 300/min) vs. expensive routes (`search_page`
@@ -163,6 +172,13 @@ the user-facing web tier:
   resolved through an opaque specifier that webpack's Edge tracer
   ignores. Single web machine today; swap the in-memory store for
   Redis or Postgres when we scale to ≥ 2.
+- **Health check decoupled from DB.** `/api/health` is a pure liveness
+  probe — it does NOT touch Postgres. Reverse proxies use this with a
+  5 s timeout and route traffic away from "unhealthy" machines; doing
+  `SELECT 1` here meant a busy Postgres (mid-checkpoint, ingest
+  contention) would mark the Node process as dead and cascade into a
+  "no good candidate" outage even though the process was fine. DB
+  health is observable via `sync_jobs` and logs.
 
 #### Memory profile
 
@@ -184,9 +200,12 @@ big the upstream zip grows:
 - **Per-chunk allocation lifecycle.** Each parse chunk (50 records)
   builds its own fresh buffers, flushes once, then the chunk is
   dropped and `setImmediate`-yielded so V8 can reap it before the
-  next chunk. Never aggregate across chunks; earlier "buffer 1000
-  records then flush" attempts starved Node's event loop during npm
-  ingest and broke Fly health checks.
+  next chunk. **Per-record `setImmediate` yield inside the parse
+  worker** keeps the event loop responsive on the worker process —
+  without it, 50 zod-validated records back-to-back blocked the loop
+  for 1 – 3 s and broke health checks. Never aggregate across chunks;
+  earlier "buffer 1000 records then flush" attempts starved the
+  event loop during npm ingest.
 - **Multi-row INSERTs at `FLUSH_INSERT_BATCH = 500`.** Lowered from
   1000 after we observed `statement_timeout` cancellations on the
   vulnerabilities table once it carried GIN+trgm fulltext indexes
@@ -195,21 +214,26 @@ big the upstream zip grows:
 - **`pkgCache` cleared at 50k entries** so the package-id Map can't
   grow unbounded across a long npm run.
 
-Result: ~220 – 480 MB RSS steady-state on the npm ingest. A 1 GB Node
-heap is technically enough but tight; the demo runs on a Fly
-`shared-cpu-1x` with 2 GB RAM for headroom against burst allocation
-during the parallel-flush window.
+- **Ingest pool capped at 2 connections** (vs. the web pool's 10),
+  leaving headroom for SSR while a hot ingest is grinding. With 3
+  ingest slots and 6 parallel SSR aggregates on the homepage we saw
+  the pool fully starved during ingest; trimming to 2 keeps one slot
+  permanently available for web queries at the cost of ~10% slower
+  ingest.
+
+Result: ~220 – 480 MB RSS steady-state on the npm ingest. 1 GB is
+comfortable for the worker process.
 
 #### Query performance
 
-The 243 MB `vulnerabilities` table doesn't fit in `shared_buffers` on
-a 512 MB Postgres machine. Without careful indexing, SSR pages do
-full-table scans, thrash buffer cache, and stack up at
-`IO:DataFileRead` — we observed `/zh` and `/en` timing out at 30 s
-under modest traffic before the indexes below landed.
+The 243 MB `vulnerabilities` table doesn't comfortably fit in
+`shared_buffers` on a small Postgres instance. Without careful
+indexing, SSR pages do full-table scans, thrash buffer cache, and
+stack up at `IO:DataFileRead` — we observed `/zh` and `/en` timing
+out at 30 s under modest traffic before the work below landed.
 
-Three families of fix are layered on top of each other; combined, they
-take warm-cache SSR pages from 26 s down to ~1.3 s.
+Four families of fix layered on top of each other; combined, they
+take warm-cache SSR pages from 26 s down to ~0.3 s.
 
 - **Composite indexes that cover the hot aggregates.** Three migrations
   (`0006_perf_indexes.sql`, `0007_perf_indexes_p2.sql`) add:
@@ -252,6 +276,22 @@ take warm-cache SSR pages from 26 s down to ~1.3 s.
   to 6 queries per minute, regardless of traffic. Implementation is a
   module-level `{at, value}` pair — no Redis, no LRU, deliberately
   trivial.
+- **`unstable_cache(60 s)` on every read-only SSR fetch.** Wrapped:
+  `getTopPackages`, `getRecentKev`, `getRecentVulns`,
+  `browsePackages`, `getTopPackagesAllEcos`, `getKevCatalog`,
+  `getEpssRising`, `getEcosystemDeepDive`. All produce identical
+  output for every user; caching for 60 s means after one warm-up
+  the entire homepage + insights + packages pages render with zero
+  PG hits. During ingest the web tier essentially serves from
+  in-memory cache, completely decoupled from PG load. Stale data
+  window is ≤ 60 s, fine for CVE data that refreshes daily.
+- **Homepage 6 × `getTopPackages` run sequentially**, not via
+  `Promise.all`. The 6 ecosystem aggregates all hit the same
+  buffer-cache pages; running them in parallel during ingest had
+  them stacking up to 30 s in `pg_stat_activity`. Sequential costs
+  ~1 s on the cold-cache homepage render but avoids the pile-up
+  entirely, and after the first render the `unstable_cache` above
+  serves all six in 0 ms anyway.
 
 Two patterns we explicitly avoid:
 
@@ -270,70 +310,70 @@ Two patterns we explicitly avoid:
 
 Cold cache is still the long tail: the first request to a path after
 DB restart or a long idle period pays disk-read latency for whatever
-isn't already in `shared_buffers`. We accept this trade-off rather
-than upgrading the DB machine — once a page is warm, SSR is <1.5 s.
+isn't already in `shared_buffers`. Once a page is warm, SSR is
+~0.3 s. The next step for further reducing cold-cache pain is a
+read-replica deployment (separates write-heavy ingest from read-heavy
+SSR at the DB level); not yet implemented for cost reasons.
 
 ## Deploy your own
 
-The repo ships with a production-ready `Dockerfile` and `fly.toml` for
-Fly.io. Self-host in three commands:
+The repo ships with a production-ready `Dockerfile`. Any platform
+that runs Docker + Postgres works (Fly.io, Render, Railway, AWS
+ECS, your own Hetzner box…). You need:
 
-```bash
-fly launch --copy-config --no-deploy   # accept the existing fly.toml
-fly postgres create                    # or use Neon / Supabase / RDS
-fly secrets set DATABASE_URL=postgres://...
-fly deploy
-```
+1. **A Postgres 16 instance** with `pg_trgm` available
+   (Neon / Supabase / RDS / self-managed — anything).
+2. **One Node container per role**, both running the same image with
+   different `PROCESS_ROLE` env:
+   - `PROCESS_ROLE=web`  → Next.js HTTP server only
+   - `PROCESS_ROLE=worker` → scheduler + ingest only (no HTTP routed
+     to it; ingest is on a 24 h timer)
+3. **Env vars** (see `.env.example` for the full list):
+   - `DATABASE_URL=postgres://…`
+   - `NEXT_PUBLIC_SITE_URL=https://your.domain`
+   - OAuth + Polar keys if you want sign-in and Pro tier
 
-The in-process scheduler picks up where it left off, so your hosted
-instance refreshes data daily without external cron.
+The in-process scheduler picks up where it left off, so the worker
+container refreshes data daily without external cron.
 
-### Sizing on Fly.io (or any small VM)
+### Sizing the deployment
 
-The hosted demo runs on this topology:
+Tested with this topology on a small managed-PaaS provider:
 
-| Component | Machine | Cost (Fly nrt) |
-|---|---|---|
-| web (Next.js HTTP only) | `shared-cpu-1x` 1 GB | ~$2.67/mo |
-| worker (scheduler + ingest) | `shared-cpu-1x` 1 GB | ~$2.67/mo |
-| Postgres | `shared-cpu-1x` 512 MB | ~$1.94/mo |
-| **Total** | | **~$7.30/mo** |
+| Component | Resources |
+|---|---|
+| web (Next.js HTTP only) | 1 vCPU, 1 GB RAM |
+| worker (scheduler + ingest) | 1 vCPU, 1 GB RAM |
+| Postgres | 1 vCPU, 1 GB RAM |
 
-A few things that look like underspending or overspending and aren't:
+A few sizing notes:
 
-- **Two 1 GB machines, not one 2 GB.** Splitting `web` and `worker`
-  into two Fly process groups means an OSV ingest pegging the event
-  loop on the worker doesn't block SSR on the web side. Memory-wise
-  each side fits in 1 GB independently: web's working set is
-  <300 MB, worker's is 220 – 480 MB (see *Memory profile*). Combined
-  cost is roughly the same as a single 2 GB machine but the failure
-  domains are properly isolated.
-- **`min_machines_running = 0` on web.** Fly will auto-provision a
-  second web machine if this is `>= 1` to get HA across deploys. For
-  a hobby-tier project we accept the ~30 s deploy-window downtime in
-  exchange for ~$2.67/mo savings. Flip it to `1` if traffic grows.
-- **`auto_stop_machines = 'off'`.** A full refresh takes 30 – 90
-  minutes and doesn't generate HTTP traffic, so Fly's idle-stop would
-  kill the ingest mid-flight. Auto-stop applies per process group,
-  but we keep it off across the app because the worker needs it.
-- **Postgres: 512 MB RAM, not 256 MB.** At 256 MB the WAL checkpoint
-  takes ~2 min on a Debian-sized ingest and stalls connections; 512 MB
-  is the floor at which OSV ingest doesn't hit the pg connection pool.
-  At 512 MB the 243 MB `vulnerabilities` table doesn't fit fully in
-  `shared_buffers` — the *Query performance* section above is what
-  makes that survivable. Bumping to 1 GB would mostly eliminate
-  cold-cache pauses if you outgrow this trade-off.
-- **`config.dangerouslyAllowAllBuilds=true` in the Dockerfile.** pnpm 11
-  refuses to run unapproved postinstall scripts in non-interactive
-  environments. Without this flag the Docker build fails on `esbuild`,
-  `sharp`, etc. Inside the build image we genuinely want them to run.
+- **Two 1 GB containers, not one 2 GB**: splitting `web` and `worker`
+  means an OSV ingest pegging the event loop on the worker doesn't
+  block SSR on the web side. Memory-wise each side fits in 1 GB
+  independently — web's working set is <300 MB, worker's is
+  220 – 480 MB (see *Memory profile*). You can run both on a single
+  larger box too; the process-role split still gives event-loop
+  isolation.
+- **Postgres ≥ 1 GB RAM**: at 512 MB, the 243 MB `vulnerabilities`
+  table doesn't fit in `shared_buffers` and cold-cache SSR pages
+  pay disk-read latency. 1 GB gives Postgres a ~256 MB shared
+  buffer pool which holds the hot tables + indexes comfortably.
+- **Worker container doesn't need HTTP routed to it.** It hosts a
+  Next.js server because the Docker image is shared, but no public
+  traffic should hit it. Health checks and load balancers target
+  the web container only.
+- **`config.dangerouslyAllowAllBuilds=true` in the Dockerfile.**
+  pnpm 11 refuses to run unapproved postinstall scripts in
+  non-interactive environments. Without this flag the Docker build
+  fails on `esbuild`, `sharp`, etc. Inside the build image we
+  genuinely want them to run.
 
-The hosted demo at `vulnscope-tw.fly.dev` runs on this config. Full
-refresh takes ~65 minutes (npm and Debian are the long tail); a typical
-incremental day takes 30 – 60 minutes with most ecosystems writing
+Full refresh takes ~65 min (npm and Debian are the long tail); a
+typical incremental day takes 30 – 60 min with most ecosystems writing
 zero or only a few hundred rows. Warm-cache SSR pages render in
-~1.3 s; cold-cache requests (first hit after DB idle) take a few
-seconds longer.
+~0.3 s; cold-cache requests (first hit after DB idle / restart) take
+a few seconds longer.
 
 ### Hosted demo vs. self-host
 
@@ -359,7 +399,7 @@ that adds:
 - **Higher API limits** for the CLI
 
 Pro features live in a separate private repo and aren't part of this
-codebase. The $9/mo pays the Fly bill and lets me work on this on
+codebase. The $9/mo pays the hosting bill and lets me work on this on
 weekends instead of letting it bitrot. If you self-host, you get the
 full open-source feature set forever — drop a cron entry and you can
 build the same alerting on top of `pnpm ingest:all`. If you want me to
