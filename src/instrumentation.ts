@@ -1,33 +1,17 @@
 /**
- * Next.js calls register() exactly once per server process (App Router
- * docs: "Use instrumentation to integrate observability tooling..."),
- * which is the right place to boot the in-process scheduler. Doing it
- * via a top-level side effect in lib/queries.ts caused doubled tick()
- * runs because Route Handler and SSR module graphs each evaluated the
- * module separately, racing the globalThis dedup flag.
+ * Next.js calls register() exactly once per server process. The actual
+ * boot work lives in instrumentation-node.ts because Next bundles
+ * THIS file for BOTH runtimes (nodejs + edge), and statically traces
+ * every reachable import — even ones behind a runtime guard. Importing
+ * scheduler/ensure-schema directly here pulled unzipper → fs-extra
+ * into the Edge bundle, which has no Node `path`/`fs` and failed the
+ * production build.
  *
- * The nodejs runtime guard skips Edge (middleware) — scheduler uses
- * pg + node:fs, which Edge can't load.
+ * The `-node` suffix file is loaded by Next ONLY in the Node.js
+ * runtime, so its transitive imports never enter the Edge graph.
  */
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "nodejs") return;
-
-  // Boot-time schema repair. Runs BEFORE the scheduler starts so the
-  // first ingest tick can rely on columns that newer code expects but
-  // the production migration may not have applied yet (this repo's
-  // deploy story is half-manual; we lean on self-healing DDL with
-  // advisory-lock serialization to make new schema self-deploying).
-  // Without this, kev — first source in orchestrator — would crash on
-  // startJob INSERT when last_heartbeat_at doesn't exist yet.
-  try {
-    const { ensureIngestSchema } = await import("@/lib/ingest/ensure-schema");
-    await ensureIngestSchema();
-  } catch (e) {
-    // Don't block server boot if DB is briefly unavailable — the
-    // ingest path will retry on its next tick.
-    console.error("[instrumentation] ensureIngestSchema failed at boot:", e);
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    await import("./instrumentation-node");
   }
-
-  const { startScheduler } = await import("@/lib/scheduler");
-  startScheduler();
 }
