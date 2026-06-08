@@ -91,46 +91,71 @@ runs upsert only the records whose `modified` actually advanced.
 
 #### Reliability
 
-A full OSV refresh runs for tens of minutes and touches every record
-in every zip. Three safety nets keep a misbehaving upstream from
-locking the scheduler forever:
+A full OSV refresh runs for an hour or two and touches every record
+in every zip. Four layered safety nets keep a misbehaving upstream
+or a network blip from locking the scheduler forever:
 
-- **Per-source timeouts.** The EPSS ingest wraps both the HTTP fetch
-  and the readline loop in an `AbortController` (5 min). Without this,
-  a half-closed Cloudflare connection would hang `for await` indefinitely
-  and the in-flight flag would never clear. This is exactly what
-  happened on the demo deployment — the EPSS row sat in `running` for
-  85 hours before the bug was found.
-- **Orchestrator watchdog.** Even if every per-source timeout fails,
-  the scheduler force-releases the in-flight flag and marks the
-  `refresh` sync_jobs row failed after 3 hours. Defense in depth.
-- **Stale-job reaper.** On boot, any `sync_jobs` row stuck in `running`
-  for more than 2 hours is reclassified as `failed (reaped)`. Anything
-  shorter is left alone so a real in-flight ingest survives a planned
-  restart.
+- **Heartbeat-based source timeout.** Each `JobHandle.progress()`
+  flush updates `sync_jobs.last_heartbeat_at`. The orchestrator polls
+  this column every 30 s and aborts a source only if no heartbeat for
+  5 min — so a legitimately-slow npm ingest runs for as long as it
+  needs to (we've seen 90+ min on Fly shared CPU), but a truly
+  hung HTTP fetch dies fast. Replaces the old wall-clock timeout,
+  which kept killing healthy sources just because the ecosystem was
+  large. A 4 h absolute cap is retained as a paranoid backstop.
+- **Per-pool `'error'` listeners + TCP keepalive.** Managed Postgres
+  (Fly / RDS / Supabase / Neon) closes idle connections after a few
+  minutes. Without a listener, pg.Pool's `'error'` event escalates to
+  `uncaughtException` and crashes the entire Node process — one idle
+  drop would take down 15 in-flight ingests at once (we hit this in
+  production). The pool listener acknowledges the event so pg can
+  drop the dead client and the next query gets a fresh one;
+  `keepAlive` reduces how often the drop happens in the first place.
+- **Orchestrator watchdog.** Even if every per-source heartbeat
+  check fails, the scheduler force-releases its in-flight flag and
+  marks the `refresh` sync_jobs row failed after 3 hours.
+- **Stale-job reaper.** Every 10 min (and on boot), any `sync_jobs`
+  row whose `last_heartbeat_at` hasn't moved in 5 min gets
+  reclassified as `failed (reaped)`. Excludes `source='refresh'`,
+  which is the orchestrator wrapper and doesn't heartbeat itself.
+  Heartbeat-based (not started_at-based) so a process crash during
+  ingest gets cleaned up in minutes instead of the next reboot.
 
 #### Memory profile
 
-OSV's npm zip expands to ~219k JSON files. Naive concurrent reads can
-OOM a small VM, and the symptom is usually a silent crash with a
-permanently-`running` `sync_jobs` row.
+OSV's npm zip is 206 MB compressed, ~1.5 GB inflated, ~220k JSON
+files. Naive zip handling will OOM a small VM, and the symptom is
+usually a silent crash with a permanently-`running` `sync_jobs` row.
 
 The ingest is tuned to keep working-set size bounded regardless of how
-big the DB grows:
+big the upstream zip grows:
 
-- **`pLimit(3)` × chunk size 100** instead of 6 × 200. Bounds in-flight
-  parsed records.
-- **No in-memory `Map<cve_id, modified_at>`.** The per-record skip is a
-  primary-key SELECT against `vulnerabilities` (~1 ms). A bit more
-  round-trip volume, but heap stays flat.
-- **`await new Promise(setImmediate)` at the chunk boundary** so V8 can
-  reap the previous chunk's parsed records before loading the next.
-- **`p-limit` cleared every 50k packages** so the `pkgCache` Map can't
-  grow unbounded.
+- **yauzl `lazyEntries: true` (pull-based) instead of unzipper.Parse
+  (push-based).** unzipper is a Transform stream whose internal
+  buffer grows unboundedly when downstream is slower than inflate —
+  we measured 1.48 GB RSS at 0.45% of npm records before swapping.
+  yauzl with lazyEntries inflates exactly one entry per `readEntry()`
+  call, so RSS stays flat regardless of zip size. MAL-* entries
+  (110k+ on npm) are skipped at the central-directory layer without
+  ever being inflated.
+- **Per-chunk allocation lifecycle.** Each parse chunk (50 records)
+  builds its own fresh buffers, flushes once, then the chunk is
+  dropped and `setImmediate`-yielded so V8 can reap it before the
+  next chunk. Never aggregate across chunks; earlier "buffer 1000
+  records then flush" attempts starved Node's event loop during npm
+  ingest and broke Fly health checks.
+- **Multi-row INSERTs at `FLUSH_INSERT_BATCH = 500`.** Lowered from
+  1000 after we observed `statement_timeout` cancellations on the
+  vulnerabilities table once it carried GIN+trgm fulltext indexes
+  (index maintenance scales superlinearly with batch size). 500 keeps
+  each statement comfortably under the 5 min ingest-pool timeout.
+- **`pkgCache` cleared at 50k entries** so the package-id Map can't
+  grow unbounded across a long npm run.
 
-These add up to a ~512 MB working set even on the npm zip. A
-1 GB Node heap is comfortable; the demo runs on a Fly `shared-cpu-1x`
-with 2 GB RAM.
+Result: ~220 – 480 MB RSS steady-state on the npm ingest. A 1 GB Node
+heap is technically enough but tight; the demo runs on a Fly
+`shared-cpu-1x` with 2 GB RAM for headroom against burst allocation
+during the parallel-flush window.
 
 ## Deploy your own
 
@@ -151,10 +176,13 @@ instance refreshes data daily without external cron.
 
 A few things that look like overspending and aren't:
 
-- **App machine: 2 GB RAM, not 1 GB.** OSV's npm zip plus zod parsing
-  plus the chunk-level concurrent reads sit around ~512 MB working set;
-  1 GB will OOM mid-ingest, leave a stuck `running` row, and skip the
-  next 24 h's tick. Cost on Fly: ~$3/month, inside the $5 free credit.
+- **App machine: 2 GB RAM, not 1 GB.** Steady-state RSS is
+  ~220 – 480 MB (see *Memory profile* above), but transient bursts
+  during the parallel cvss/affected/refs/aliases flush — combined
+  with V8's lazy GC under shared CPU — can push past 1 GB and trip
+  OOM. 2 GB gives enough headroom that GC has time to reclaim between
+  chunks without the event loop stalling Fly's health checks. Cost on
+  Fly: ~$5/month, just outside the $5 free credit.
 - **`auto_stop_machines = 'off'` and `min_machines_running = 1`.** A
   full refresh takes 30 – 60 minutes and doesn't generate HTTP traffic,
   so Fly's idle-stop will kill the ingest. The added cost is small;
