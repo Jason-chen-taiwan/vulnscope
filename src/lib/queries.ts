@@ -1,8 +1,20 @@
 import "server-only";
 import { sql } from "drizzle-orm";
+import { unstable_cache } from "next/cache";
 import { db, pool } from "@/db/client";
 import { isAffected, type Ecosystem } from "./version-match";
 import type { OsvRange } from "./osv";
+
+/**
+ * Default TTL for SSR-side caches. 60 seconds is generous enough that
+ * during ingest (when PG is busy writing) the web tier serves entirely
+ * from in-memory cache, and short enough that fresh CVE data shows up
+ * on the next minute. unstable_cache stores per-Node-process — every
+ * web replica builds its own cache, which is fine because the data is
+ * read-only and inconsistencies between replicas are bounded by the
+ * 60s TTL.
+ */
+const SSR_CACHE_TTL_SEC = 60;
 
 export interface VulnRow {
   cve_id: string;
@@ -364,7 +376,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return value;
 }
 
-export async function getRecentKev(limit = 10) {
+async function _getRecentKev(limit: number) {
   const { rows } = await pool.query(
     `SELECT cve_id, summary, description, kev_added_at
        FROM vulnerabilities
@@ -375,18 +387,16 @@ export async function getRecentKev(limit = 10) {
   );
   return rows as Array<{ cve_id: string; summary: string | null; description: string | null; kev_added_at: Date | null }>;
 }
+export const getRecentKev = unstable_cache(_getRecentKev, ["getRecentKev"], {
+  revalidate: SSR_CACHE_TTL_SEC,
+});
 
-export async function getTopPackages(ecosystem: string, limit = 12) {
+async function _getTopPackages(ecosystem: string, limit: number) {
   // Drive the join from `affected` rather than `packages`. The new
   // composite index idx_affected_eco_pkg (ecosystem, package_id)
   // INCLUDE (cve_id) — created in migration 0006 — lets PG enter the
   // affected table via the ecosystem key directly and run COUNT(DISTINCT
-  // cve_id) as an index-only scan. Driving from `packages p WHERE
-  // p.ecosystem=...` previously forced a full scan of affected even
-  // though the same data was eligible for index narrowing.
-  // Production saw this query at 21-28s with IO:DataFileRead under
-  // homepage's 6-parallel call pattern; expected <200ms after the
-  // rewrite + index.
+  // cve_id) as an index-only scan.
   const { rows } = await pool.query(
     `SELECT a.ecosystem, p.name, COUNT(DISTINCT a.cve_id)::int AS cve_count,
             COUNT(*) FILTER (WHERE v.kev)::int AS kev_count
@@ -401,6 +411,14 @@ export async function getTopPackages(ecosystem: string, limit = 12) {
   );
   return rows as Array<{ ecosystem: string; name: string; cve_count: number; kev_count: number }>;
 }
+// Wrapped in unstable_cache: the homepage calls this 6× per render
+// (one per featured ecosystem) and it's the slowest query on the page.
+// Cache key includes ecosystem + limit via args, so PyPI's cache doesn't
+// collide with Maven's. TTL 60s — fresh enough for browsing.
+export const getTopPackages = (ecosystem: string, limit = 12) =>
+  unstable_cache(_getTopPackages, ["getTopPackages", ecosystem, String(limit)], {
+    revalidate: SSR_CACHE_TTL_SEC,
+  })(ecosystem, limit);
 
 export interface PackageListFilter {
   q?: string;
@@ -536,7 +554,7 @@ export async function autocompletePackages(prefix: string, limit = 10) {
   }>;
 }
 
-export async function getRecentVulns(limit = 10) {
+async function _getRecentVulns(limit: number) {
   const { rows } = await pool.query(
     `SELECT v.cve_id, v.summary, v.description, v.published_at, v.kev,
             cs.severity, cs.base_score::float8 AS base_score
@@ -556,6 +574,10 @@ export async function getRecentVulns(limit = 10) {
     kev: boolean; severity: string | null; base_score: number | null;
   }>;
 }
+export const getRecentVulns = (limit = 10) =>
+  unstable_cache(_getRecentVulns, ["getRecentVulns", String(limit)], {
+    revalidate: SSR_CACHE_TTL_SEC,
+  })(limit);
 
 /**
  * Top N recent CVEs for a (ecosystem, packageName) pair, joined with

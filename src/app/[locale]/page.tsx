@@ -14,16 +14,26 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations({ locale, namespace: "Home" });
-  const [stats, kev, recent, freshness, ingestRunning, ...top] = await Promise.all([
+  // The first 5 calls are heterogeneous (one each) → safe to parallelise.
+  // The 6 getTopPackages calls all hit the same shape of aggregate on
+  // affected/vulnerabilities and were observed (2026-06-08) stacking up
+  // in pg_stat_activity to 30+ seconds during ingest because they all
+  // compete for the same buffer-cache pages. Running them sequentially
+  // costs ~6 × 200ms = 1.2s in the warm-cache case but stays responsive
+  // (no event-loop pileup, no pg pool starvation) during ingest. Each
+  // call hits an in-memory cache (60s) anyway so once one user has
+  // warmed up the page, subsequent renders are 0ms regardless of order.
+  const [stats, kev, recent, freshness, ingestRunning] = await Promise.all([
     getDashboardStats(),
     getRecentKev(8),
     getRecentVulns(15),
     getFreshness(),
     isIngestRunning(),
-    ...FEATURED_ECOSYSTEMS.map((eco) => getTopPackages(eco, 8)),
   ]);
   const topByEco: Record<string, Awaited<ReturnType<typeof getTopPackages>>> = {};
-  FEATURED_ECOSYSTEMS.forEach((eco, i) => (topByEco[eco] = top[i]));
+  for (const eco of FEATURED_ECOSYSTEMS) {
+    topByEco[eco] = await getTopPackages(eco, 8);
+  }
   const oldest = freshness
     .filter((f) => f.finished_at)
     .map((f) => new Date(f.finished_at!).getTime())

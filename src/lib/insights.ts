@@ -1,5 +1,8 @@
 import "server-only";
+import { unstable_cache } from "next/cache";
 import { pool } from "@/db/client";
+
+const SSR_CACHE_TTL_SEC = 60;
 
 /**
  * Aggregation queries for the /insights/* pages. Each returns a result
@@ -16,7 +19,7 @@ export interface TopPackageRow {
   max_epss: number | null;
 }
 
-export async function getTopPackagesAllEcos(limit = 100): Promise<TopPackageRow[]> {
+async function _getTopPackagesAllEcos(limit: number): Promise<TopPackageRow[]> {
   // Pre-aggregate from affected first (driven by idx_affected_pkg / its
   // composite siblings), then JOIN packages by PK. Previously this drove
   // from packages and forced a full scan of affected + vulnerabilities
@@ -41,8 +44,12 @@ export async function getTopPackagesAllEcos(limit = 100): Promise<TopPackageRow[
   );
   return rows as TopPackageRow[];
 }
+export const getTopPackagesAllEcos = (limit = 100): Promise<TopPackageRow[]> =>
+  unstable_cache(_getTopPackagesAllEcos, ["getTopPackagesAllEcos", String(limit)], {
+    revalidate: SSR_CACHE_TTL_SEC,
+  })(limit);
 
-export async function getKevCatalog(limit = 500) {
+async function _getKevCatalog(limit: number) {
   const { rows } = await pool.query(
     `SELECT v.cve_id, v.summary, v.description, v.kev_added_at, v.epss_score::float8 AS epss_score,
             cs.severity, cs.base_score::float8 AS base_score
@@ -58,8 +65,12 @@ export async function getKevCatalog(limit = 500) {
   );
   return rows;
 }
+export const getKevCatalog = (limit = 500) =>
+  unstable_cache(_getKevCatalog, ["getKevCatalog", String(limit)], {
+    revalidate: SSR_CACHE_TTL_SEC,
+  })(limit);
 
-export async function getEpssRising(limit = 100) {
+async function _getEpssRising(limit: number) {
   const { rows } = await pool.query(
     `SELECT v.cve_id, v.summary, v.description, v.epss_score::float8 AS epss_score,
             v.epss_percentile::float8 AS epss_percentile, v.kev,
@@ -76,8 +87,12 @@ export async function getEpssRising(limit = 100) {
   );
   return rows;
 }
+export const getEpssRising = (limit = 100) =>
+  unstable_cache(_getEpssRising, ["getEpssRising", String(limit)], {
+    revalidate: SSR_CACHE_TTL_SEC,
+  })(limit);
 
-export async function getEcosystemDeepDive(ecosystem: string, limit = 200) {
+async function _getEcosystemDeepDive(ecosystem: string, limit: number) {
   // Drive from affected via idx_affected_eco_pkg (ecosystem, package_id)
   // INCLUDE (cve_id) — same trick that took getTopPackages from 21s to 55ms.
   const { rows } = await pool.query(
@@ -100,6 +115,12 @@ export async function getEcosystemDeepDive(ecosystem: string, limit = 200) {
   );
   return rows as { name: string; cve_count: number; kev_count: number; max_epss: number | null }[];
 }
+export const getEcosystemDeepDive = (ecosystem: string, limit = 200) =>
+  unstable_cache(
+    _getEcosystemDeepDive,
+    ["getEcosystemDeepDive", ecosystem, String(limit)],
+    { revalidate: SSR_CACHE_TTL_SEC },
+  )(ecosystem, limit);
 
 export const INSIGHT_ECOSYSTEMS = [
   "npm", "PyPI", "Maven", "Go", "Debian", "Alpine",

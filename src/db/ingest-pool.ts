@@ -6,13 +6,19 @@
  *
  *   web pool:    no statement_timeout, max 10 connections — long search
  *                queries and dashboard SSR are fine to take their time
- *   ingest pool: 5min statement_timeout, max 3 connections, 30s connect
+ *   ingest pool: 5min statement_timeout, max 2 connections, 30s connect
  *                timeout — a single hot ingest can't drown the web pool,
  *                and a stuck pg query gets killed server-side. 60s
  *                wasn't enough once vulnerabilities had GIN+trgm
  *                indexes; a 1000-row INSERT with ON CONFLICT DO UPDATE
  *                hits index maintenance that legitimately needs 60-120s
  *                on Fly shared CPU under contention.
+ *
+ *                Lowered from 3 → 2 (2026-06-08): observed homepage's
+ *                6 parallel getTopPackages queries stacking up at the
+ *                pg connection slot during ingest. Leaving 1 extra
+ *                slot for web SSR is more important than the marginal
+ *                ingest throughput gain from a 3rd ingest connection.
  *
  * Topology note: `statement_timeout` is sent as a Postgres startup
  * parameter on each connection. That works against a direct Postgres
@@ -44,7 +50,7 @@ export const ingestPool =
   globalThis.__pgIngestPool ??
   new Pool({
     connectionString,
-    max: 3,
+    max: 2,
     statement_timeout: 300_000,
     connectionTimeoutMillis: 30_000,
     application_name: "vulnscope-ingest",
