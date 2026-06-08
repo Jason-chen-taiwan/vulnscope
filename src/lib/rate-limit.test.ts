@@ -8,6 +8,26 @@ import {
   __resetStoreForTests,
 } from "./rate-limit";
 
+// ─── Bucket catalog presence ─────────────────────────────────────────────────
+
+describe("RATE_LIMIT_BUCKETS catalog", () => {
+  // Sanity that the SSR-round buckets exist; if anyone renames one, the
+  // dispatcher in middleware.ts will break with a TS error first, but
+  // a runtime assertion catches accidental deletion too.
+  it.each([
+    "page_view",
+    "search_page",
+    "insights_page",
+    "feed",
+    "sitemap",
+  ] as const)("has SSR bucket %s with sane policy", (name) => {
+    const b = RATE_LIMIT_BUCKETS[name];
+    expect(b).toBeDefined();
+    expect(b.capacity).toBeGreaterThan(0);
+    expect(b.refillPerMin).toBeGreaterThan(0);
+  });
+});
+
 // ─── Pure algorithm tests (no Map, no Request) ───────────────────────────────
 
 describe("consume() token bucket math", () => {

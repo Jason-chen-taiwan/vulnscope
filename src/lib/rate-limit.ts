@@ -35,6 +35,20 @@
 // module under the Node environment without the client-guard
 // throwing. Every caller path (API route handlers) is already a
 // server-only context.
+//
+// CRITICAL — Edge bundle compatibility:
+// This file is imported by `src/middleware.ts`, which Next.js
+// compiles into the Edge runtime by default. Anything imported here
+// (statically OR as a `string-literal` dynamic import) gets pulled
+// into the Edge bundle. The pro-bridge → Better Auth → kysely-adapter
+// chain has Edge-incompatible code paths (DEFAULT_MIGRATION_TABLE,
+// bun-sqlite-dialect) that fail the build.
+//
+// Solution: the auth-aware identity lookup lives in a SEPARATE file
+// (`./rate-limit-auth.ts`) that this file resolves through an
+// indirection variable that webpack can't statically analyse. When
+// the caller passes `identityHint: "ip-only"` the indirection is
+// never touched and the Edge bundle stays clean.
 import type { NextRequest } from "next/server";
 import { fail } from "./envelope";
 
@@ -50,6 +64,7 @@ import { fail } from "./envelope";
  */
 export const RATE_LIMIT_BUCKETS = {
   global:          { capacity: 300, refillPerMin: 300 },
+  // API buckets (round 1: /api/* routes)
   autocomplete:    { capacity:  60, refillPerMin:  60 },
   search:          { capacity: 120, refillPerMin: 120 },
   vuln_detail:     { capacity: 120, refillPerMin: 120 },
@@ -58,6 +73,20 @@ export const RATE_LIMIT_BUCKETS = {
   mutation:        { capacity:  30, refillPerMin:  30 },
   auth:            { capacity:  10, refillPerMin:  10 },
   admin:           { capacity:   5, refillPerMin:   5 },
+  // SSR buckets (round 2: /zh/**, /en/**, /feed/*, /sitemap.xml)
+  // page_view covers cheap pages (home, cve detail, package detail).
+  page_view:       { capacity: 300, refillPerMin: 300 },
+  // search_page and insights_page wrap the expensive SSR routes.
+  // searchVulns and the insights aggregations are the queries that
+  // historically saturated the 512 MB Postgres machine.
+  search_page:     { capacity:  60, refillPerMin:  60 },
+  insights_page:   { capacity:  60, refillPerMin:  60 },
+  // feed: RSS endpoints, called by readers + bots. Tight enough that
+  // a misbehaving feed reader can't hammer searchVulns.
+  feed:            { capacity:  60, refillPerMin:  60 },
+  // sitemap: bots love these. 30/min/IP is plenty for any legitimate
+  // crawler (Googlebot fetches sitemaps at most a few times/day).
+  sitemap:         { capacity:  30, refillPerMin:  30 },
 } as const satisfies Record<string, { capacity: number; refillPerMin: number }>;
 
 export type BucketName = keyof typeof RATE_LIMIT_BUCKETS;
@@ -109,18 +138,26 @@ function maybeSweep(now: number) {
  * Look up the requester's identity. `user:<id>` if signed in (and the
  * route opted into auth lookup); otherwise `ip:<ip>` from one of the
  * proxy headers Cloudflare and Fly add.
+ *
+ * The auth path delegates to `./rate-limit-auth` via an obfuscated
+ * import path that webpack can't statically trace. This keeps the
+ * pro-bridge / Better Auth chain out of the Edge middleware bundle.
  */
 async function deriveIdentity(
   req: NextRequest,
   opts: { identityHint?: "ip-only" } | undefined,
 ): Promise<{ key: string; signedIn: boolean }> {
-  // Auth path — lazy import keeps the rate-limiter usable from any route
-  // including OSS / PRO_ENABLED=0 builds where the Pro module 404s.
   if (opts?.identityHint !== "ip-only") {
     try {
-      const { proAuth } = await import("@/lib/pro-bridge");
-      const pro = await proAuth();
-      const user = await pro?.getCurrentUser();
+      // Indirection: webpack tracer sees a non-literal specifier and
+      // skips it for the Edge bundle. Node runtime resolves it at run
+      // time; Edge middleware never reaches this branch because every
+      // middleware caller passes identityHint: "ip-only".
+      const modPath = "./rate-limit-auth";
+      const mod: typeof import("./rate-limit-auth") = await import(
+        /* webpackIgnore: true */ modPath
+      );
+      const user = await mod.lookupSignedInUser();
       if (user?.id) return { key: `user:${user.id}`, signedIn: true };
     } catch {
       // Auth subsystem unavailable — fall through to IP identity.

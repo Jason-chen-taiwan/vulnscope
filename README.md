@@ -133,22 +133,36 @@ the user-facing web tier:
   which is the orchestrator wrapper and doesn't heartbeat itself.
   Heartbeat-based (not started_at-based) so a process crash during
   ingest gets cleaned up in minutes instead of the next reboot.
-- **Per-route rate limiting.** Every public API route is wrapped with
-  a token-bucket limiter (`src/lib/rate-limit.ts`). Cloudflare in front
-  of `vulnscope-tw.fly.dev` blocks volumetric attacks at the edge, but
+- **Per-route rate limiting on every public HTTP path.** Token-bucket
+  limiter in `src/lib/rate-limit.ts` protects API routes, SSR pages,
+  RSS feeds, and the sitemap. Cloudflare in front of
+  `vulnscope-tw.fly.dev` blocks volumetric attacks at the edge, but
   attackers can bypass to the `.fly.dev` domain directly — without
-  app-layer limits, one curl loop on `/api/v1/packages/autocomplete`
-  saturates the 512 MB Postgres machine. Identity precedence is
-  `signed-in user > CF-Connecting-IP > Fly-Client-IP > X-Forwarded-For`.
-  Signed-in users get 3× capacity on every bucket. Buckets are tight
-  on the expensive shapes (`autocomplete` 60/min, `check_batch` 10/min,
-  `auth` 10/min — the credential-stuffing target) and loose on lookups
-  (`vuln_detail`, `package_detail` 120/min). `/api/health` and the
-  Polar webhook are exempt; OPTIONS preflight bypasses the limiter
-  entirely. In-memory store with a 50 000-entry hard cap and
-  probabilistic eviction so a botnet cycling source IPs can't OOM the
-  process. Single web machine today; swap the store for Redis or
-  Postgres when we scale to ≥ 2.
+  app-layer limits, one `curl /zh/search?q=foo` loop saturated the
+  512 MB Postgres machine. Identity precedence is `signed-in user >
+  CF-Connecting-IP > Fly-Client-IP > X-Forwarded-For`. Signed-in users
+  get 3× capacity. Coverage is layered:
+    - **API routes**: per-route `withRateLimit(bucket, handler)` HOF.
+      Buckets are tight on the expensive shapes (`autocomplete`
+      60/min, `check_batch` 10/min, `auth` 10/min — the
+      credential-stuffing target).
+    - **SSR pages** (`/zh/**`, `/en/**`): `src/middleware.ts` checks
+      a path-dispatched bucket BEFORE next-intl runs. Cheap pages
+      (`page_view` 300/min) vs. expensive routes (`search_page`
+      60/min, `insights_page` 60/min).
+    - **Feeds** (`/feed/*`): same HOF as API, bucket `feed` 60/min.
+    - **Sitemap** (`/sitemap.xml`): inline `checkLimit` at the top of
+      `sitemap.ts`; on 429 it returns an empty sitemap rather than a
+      structurally-invalid error response (`sitemap` 30/min).
+  Exempt: `/api/health`, Polar webhook (HMAC + 429 would look like a
+  webhook bug), all OPTIONS preflights. The in-memory Map is capped at
+  50 000 entries with probabilistic eviction so a botnet cycling
+  source IPs can't OOM the process. Edge-bundle compatibility is
+  preserved: middleware never pulls the Better Auth chain because the
+  auth-aware identity helper lives in a separately-imported module
+  resolved through an opaque specifier that webpack's Edge tracer
+  ignores. Single web machine today; swap the in-memory store for
+  Redis or Postgres when we scale to ≥ 2.
 
 #### Memory profile
 
