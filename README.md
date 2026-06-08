@@ -92,9 +92,19 @@ runs upsert only the records whose `modified` actually advanced.
 #### Reliability
 
 A full OSV refresh runs for an hour or two and touches every record
-in every zip. Four layered safety nets keep a misbehaving upstream
-or a network blip from locking the scheduler forever:
+in every zip. Five layered safety nets keep a misbehaving upstream,
+a network blip, or a runaway ingest from breaking the user-facing
+web tier:
 
+- **Web / worker process split.** Two Fly process groups share one
+  Docker image: the `web` group runs Next.js only, the `worker` group
+  runs the scheduler + ingest only. `PROCESS_ROLE` env (set per group
+  in `fly.toml`) decides which side of `src/instrumentation-node.ts`
+  boots. ingest hogging the event loop for a 1 – 3 s parse-and-flush
+  chunk can't stall HTTP request handling because they're literally
+  different Node processes. Manual `POST /api/v1/admin/refresh`
+  returns 503 in this mode (the web process has no scheduler to call);
+  daily auto-refresh on the worker is the only trigger.
 - **Heartbeat-based source timeout.** Each `JobHandle.progress()`
   flush updates `sync_jobs.last_heartbeat_at`. The orchestrator polls
   this column every 30 s and aborts a source only if no heartbeat for
@@ -111,6 +121,9 @@ or a network blip from locking the scheduler forever:
   production). The pool listener acknowledges the event so pg can
   drop the dead client and the next query gets a fresh one;
   `keepAlive` reduces how often the drop happens in the first place.
+  Both the web pool (`src/db/client.ts`) and the ingest pool
+  (`src/db/ingest-pool.ts`) carry the listener — early versions only
+  had it on ingest and an idle drop took down SSR.
 - **Orchestrator watchdog.** Even if every per-source heartbeat
   check fails, the scheduler force-releases its in-flight flag and
   marks the `refresh` sync_jobs row failed after 3 hours.
@@ -157,6 +170,79 @@ heap is technically enough but tight; the demo runs on a Fly
 `shared-cpu-1x` with 2 GB RAM for headroom against burst allocation
 during the parallel-flush window.
 
+#### Query performance
+
+The 243 MB `vulnerabilities` table doesn't fit in `shared_buffers` on
+a 512 MB Postgres machine. Without careful indexing, SSR pages do
+full-table scans, thrash buffer cache, and stack up at
+`IO:DataFileRead` — we observed `/zh` and `/en` timing out at 30 s
+under modest traffic before the indexes below landed.
+
+Three families of fix are layered on top of each other; combined, they
+take warm-cache SSR pages from 26 s down to ~1.3 s.
+
+- **Composite indexes that cover the hot aggregates.** Three migrations
+  (`0006_perf_indexes.sql`, `0007_perf_indexes_p2.sql`) add:
+    - `idx_affected_eco_pkg (ecosystem, package_id) INCLUDE (cve_id)`
+      — lets `getTopPackages`-shaped queries do an index-only scan,
+      no heap fetches for the `COUNT(DISTINCT cve_id)` aggregate.
+      Production EXPLAIN dropped from 21 000 ms to 55 ms (380×).
+    - `idx_cvss_cve_score (cve_id, base_score DESC NULLS LAST)`
+      satisfies the `LEFT JOIN LATERAL (... ORDER BY base_score DESC
+      LIMIT 1)` pattern with a pure index scan, no sort.
+    - `idx_vuln_kev_added` partial on `(kev_added_at DESC) WHERE
+      kev = true` — the 1 600 KEV rows of 75 000 total, indexed just
+      enough for `getRecentKev` and the KEV catalog page.
+    - `idx_vuln_epss_score_partial` on `(epss_score DESC) WHERE
+      epss_score IS NOT NULL` — drives EPSS rising + sitemap's
+      `kev OR epss>=0.05` bitmap-or path.
+- **Query shape: pre-aggregate from the smaller table first.** The
+  classic mistake was `FROM packages p LEFT JOIN affected a … GROUP BY
+  p.ecosystem, p.name` — every page request fully re-aggregated 120 k
+  affected rows. The rewrite materialises the aggregate first as a CTE
+  driven from `affected`, then joins the 15 k packages table by PK
+  at the end:
+    ```sql
+    WITH agg AS (
+      SELECT a.package_id, COUNT(DISTINCT a.cve_id) AS cve_count, ...
+        FROM affected a JOIN vulnerabilities v ON v.cve_id = a.cve_id
+       [WHERE a.ecosystem = $1]
+       GROUP BY a.package_id
+    )
+    SELECT p.ecosystem, p.name, agg.cve_count, ...
+      FROM agg JOIN packages p ON p.id = agg.package_id
+     ORDER BY agg.kev_count DESC LIMIT $N
+    ```
+  Applied to `getTopPackages`, `browsePackages`, `getTopPackagesAllEcos`,
+  `getEcosystemDeepDive`, and the sitemap package query.
+- **A 60 s in-memory cache for `getDashboardStats`.** The six
+  `COUNT(*)` subqueries that feed the homepage widget return the same
+  numbers for every user and don't need to be precise to the second.
+  Caching in the web process drops 6 expensive queries per pageview
+  to 6 queries per minute, regardless of traffic. Implementation is a
+  module-level `{at, value}` pair — no Redis, no LRU, deliberately
+  trivial.
+
+Two patterns we explicitly avoid:
+
+- **`EXISTS (… subquery with ILIKE infix …)` inside an `OR`.** The
+  optimizer routinely refuses to use the trigram GIN index inside an
+  `EXISTS`. The fix is a CTE that materialises the matching CVE set
+  once via the trigram index, then the outer query does
+  `cve_id IN (SELECT cve_id FROM matching_cves)`. Used in
+  `searchVulns` to keep the "type `log4j`, find CVE-2021-44228" UX
+  working without the per-row scan it used to do.
+- **N+1 aggregates in type-ahead.** `autocompletePackages` used to
+  `LEFT JOIN affected` with `COUNT(DISTINCT cve_id)` per match. Every
+  keystroke fired a full aggregate. Now it's a pure `packages` query
+  with the trigram index; the dropdown doesn't need a CVE count next
+  to each candidate.
+
+Cold cache is still the long tail: the first request to a path after
+DB restart or a long idle period pays disk-read latency for whatever
+isn't already in `shared_buffers`. We accept this trade-off rather
+than upgrading the DB machine — once a page is warm, SSR is <1.5 s.
+
 ## Deploy your own
 
 The repo ships with a production-ready `Dockerfile` and `fly.toml` for
@@ -174,22 +260,39 @@ instance refreshes data daily without external cron.
 
 ### Sizing on Fly.io (or any small VM)
 
-A few things that look like overspending and aren't:
+The hosted demo runs on this topology:
 
-- **App machine: 2 GB RAM, not 1 GB.** Steady-state RSS is
-  ~220 – 480 MB (see *Memory profile* above), but transient bursts
-  during the parallel cvss/affected/refs/aliases flush — combined
-  with V8's lazy GC under shared CPU — can push past 1 GB and trip
-  OOM. 2 GB gives enough headroom that GC has time to reclaim between
-  chunks without the event loop stalling Fly's health checks. Cost on
-  Fly: ~$5/month, just outside the $5 free credit.
-- **`auto_stop_machines = 'off'` and `min_machines_running = 1`.** A
-  full refresh takes 30 – 60 minutes and doesn't generate HTTP traffic,
-  so Fly's idle-stop will kill the ingest. The added cost is small;
-  the alternative is a never-completing refresh.
+| Component | Machine | Cost (Fly nrt) |
+|---|---|---|
+| web (Next.js HTTP only) | `shared-cpu-1x` 1 GB | ~$2.67/mo |
+| worker (scheduler + ingest) | `shared-cpu-1x` 1 GB | ~$2.67/mo |
+| Postgres | `shared-cpu-1x` 512 MB | ~$1.94/mo |
+| **Total** | | **~$7.30/mo** |
+
+A few things that look like underspending or overspending and aren't:
+
+- **Two 1 GB machines, not one 2 GB.** Splitting `web` and `worker`
+  into two Fly process groups means an OSV ingest pegging the event
+  loop on the worker doesn't block SSR on the web side. Memory-wise
+  each side fits in 1 GB independently: web's working set is
+  <300 MB, worker's is 220 – 480 MB (see *Memory profile*). Combined
+  cost is roughly the same as a single 2 GB machine but the failure
+  domains are properly isolated.
+- **`min_machines_running = 0` on web.** Fly will auto-provision a
+  second web machine if this is `>= 1` to get HA across deploys. For
+  a hobby-tier project we accept the ~30 s deploy-window downtime in
+  exchange for ~$2.67/mo savings. Flip it to `1` if traffic grows.
+- **`auto_stop_machines = 'off'`.** A full refresh takes 30 – 90
+  minutes and doesn't generate HTTP traffic, so Fly's idle-stop would
+  kill the ingest mid-flight. Auto-stop applies per process group,
+  but we keep it off across the app because the worker needs it.
 - **Postgres: 512 MB RAM, not 256 MB.** At 256 MB the WAL checkpoint
   takes ~2 min on a Debian-sized ingest and stalls connections; 512 MB
   is the floor at which OSV ingest doesn't hit the pg connection pool.
+  At 512 MB the 243 MB `vulnerabilities` table doesn't fit fully in
+  `shared_buffers` — the *Query performance* section above is what
+  makes that survivable. Bumping to 1 GB would mostly eliminate
+  cold-cache pauses if you outgrow this trade-off.
 - **`config.dangerouslyAllowAllBuilds=true` in the Dockerfile.** pnpm 11
   refuses to run unapproved postinstall scripts in non-interactive
   environments. Without this flag the Docker build fails on `esbuild`,
@@ -198,7 +301,9 @@ A few things that look like overspending and aren't:
 The hosted demo at `vulnscope-tw.fly.dev` runs on this config. Full
 refresh takes ~65 minutes (npm and Debian are the long tail); a typical
 incremental day takes 30 – 60 minutes with most ecosystems writing
-zero or only a few hundred rows.
+zero or only a few hundred rows. Warm-cache SSR pages render in
+~1.3 s; cold-cache requests (first hit after DB idle) take a few
+seconds longer.
 
 ### Hosted demo vs. self-host
 
@@ -362,6 +467,16 @@ right next to them.
   add NVD or vendor scores later without schema changes.
 - `epss_score` and `epss_percentile` live on `vulnerabilities` (1:1
   relationship) with a `DESC NULLS LAST` index.
+- **Performance indexes (migrations 0006 and 0007) are hand-written
+  SQL** because drizzle 0.36 can't express the features that make them
+  cheap: partial `WHERE` clauses on `idx_vuln_kev_added` /
+  `idx_vuln_epss_score_partial`, and the `INCLUDE (cve_id)` covering
+  column on `idx_affected_eco_pkg`. `schema.ts` carries a column-only
+  approximation of each so `db:generate` doesn't try to drop the live
+  index on the next migration run.
+- **`CREATE INDEX CONCURRENTLY` requires running outside a transaction.**
+  Apply 0006 and 0007 to a populated DB with `psql -f` (each statement
+  auto-commits), not via a transactional migration wrapper.
 
 ## Stack
 
