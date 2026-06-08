@@ -93,14 +93,24 @@ async function reapStaleJobs() {
   // COALESCE handles pre-migration rows whose heartbeat is NULL.
   try {
     const pool = await getPool();
-    // EXCLUDE source='refresh' from reaping. refresh is the orchestrator
-    // wrapper that holds open while child ingests run; it doesn't write
-    // its own heartbeat (only the per-source JobHandles do), so a 5min
-    // no-heartbeat threshold misfires whenever a single child takes
-    // longer than 5min. tick()'s own try/finally already releases the
-    // refresh row when runFullRefresh returns; the 3h watchdog inside
-    // tick() catches a truly stuck orchestrator. Reaper covers child
-    // sources (osv:*, kev, epss, nvd, exploits) only — they DO heartbeat.
+    // Two reaper passes. The refresh row and child rows have different
+    // liveness signals so they need different thresholds.
+    //
+    //  - **child sources** (kev, osv:*, epss, nvd, exploits) write
+    //    last_heartbeat_at every flush (~1/sec during a hot ingest).
+    //    Threshold: 5 min without a heartbeat → reap.
+    //
+    //  - **refresh** is the orchestrator wrapper that holds open while
+    //    child ingests run; it doesn't write its own heartbeat, so the
+    //    5 min signal would misfire whenever a single child took longer
+    //    than 5 min. tick()'s in-process 3 h watchdog clears the in-
+    //    flight flag, but if the Node process dies the watchdog never
+    //    fires and the row stays `running` forever — observed in
+    //    production 2026-06-08 (three stuck refresh rows from 2-3.5h
+    //    ago that made shouldSkipScheduled() refuse every subsequent
+    //    tick because they still looked "in flight"). Threshold: 3 h
+    //    since started_at → reap. Matches the watchdog so DB state and
+    //    process state agree.
     await pool.query(
       `UPDATE sync_jobs
           SET status = 'failed',
@@ -110,8 +120,41 @@ async function reapStaleJobs() {
           AND source <> 'refresh'
           AND COALESCE(last_heartbeat_at, started_at) < now() - interval '5 minutes'`,
     );
+    await pool.query(
+      `UPDATE sync_jobs
+          SET status = 'failed',
+              finished_at = now(),
+              error_message = COALESCE(error_message, 'reaped: refresh exceeded 3h watchdog')
+        WHERE status = 'running'
+          AND source = 'refresh'
+          AND started_at < now() - interval '3 hours'`,
+    );
   } catch {
     /* ignore — DB might not be ready yet */
+  }
+}
+
+/**
+ * One-shot, boot-time cleanup of orphaned `refresh` rows. See
+ * startScheduler() for the rationale. Separate from reapStaleJobs()
+ * because the threshold logic differs: at boot we have proof the
+ * old refresh is dead (the in-memory flag just reset), so age
+ * doesn't matter. Periodic reaper still uses the 3h threshold
+ * because mid-run it can't tell a live refresh apart from a stuck
+ * one without that grace period.
+ */
+async function clearOrphanedRefreshesOnBoot() {
+  try {
+    const pool = await getPool();
+    await pool.query(
+      `UPDATE sync_jobs
+          SET status = 'failed',
+              finished_at = now(),
+              error_message = COALESCE(error_message, 'reaped: orphaned across worker restart')
+        WHERE status = 'running' AND source = 'refresh'`,
+    );
+  } catch {
+    /* ignore */
   }
 }
 
@@ -126,13 +169,18 @@ export function startScheduler() {
   const intervalH = REFRESH_INTERVAL_MS / 3600 / 1000;
   console.log(`[scheduler] daily refresh active (every ${intervalH}h, first run in ${STARTUP_DELAY_MS / 1000}s)`);
 
+  // On boot, do an aggressive sweep: any refresh row left in `running`
+  // is an orphan by definition because the in-process flag
+  // (__vulnscope_refresh_in_flight) lives in memory and was just reset
+  // when the worker started. Without this, after a worker crash /
+  // deploy the next tick sees the old refresh row, shouldSkipScheduled
+  // returns "another refresh is already in flight" forever, and the
+  // dashboard fills up — observed 2026-06-08 with three stuck rows
+  // accumulating across restarts. The periodic reaper afterwards uses
+  // the standard 3h threshold; this one-shot boot cleanup uses no age
+  // threshold because the boot itself is the evidence of orphanhood.
   void reapStaleJobs();
-  // Periodic reaper catches "row stuck at running because Node process
-  // exited mid-write" without waiting for a machine restart. Same SQL
-  // (>2h-old runs only), just scheduled. Per-source timeouts in
-  // orchestrator.ts also write failed rows directly via markTimedOut(),
-  // so this is the third-line safety net behind the first two
-  // (JS-level timeout + sync-jobs.finish() guard).
+  void clearOrphanedRefreshesOnBoot();
   setInterval(() => void reapStaleJobs(), REAPER_INTERVAL_MS);
   // Stagger the first run so a fresh `pnpm dev` doesn't immediately spike CPU.
   setTimeout(() => {
