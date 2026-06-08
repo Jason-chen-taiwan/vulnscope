@@ -494,29 +494,337 @@ Deliberately. If you need any of these, look elsewhere or fork:
 
 ## How it works
 
+### Topology
+
 ```
-                 OSV.dev bulk zips       CISA KEV          FIRST.org EPSS
-                 (14 ecosystems)         (daily JSON)       (daily CSV.gz)
-                       │                      │                   │
-                       ▼                      ▼                   ▼
-                 ┌─────────────────────────────────────────────────┐
-                 │  scripts/ingest/{osv,kev,epss}.ts (Node + zod)  │
-                 │  - normalize to OSV-style canonical schema      │
-                 │  - upsert (idempotent, safe to re-run)          │
-                 └────────────────────┬────────────────────────────┘
-                                      │
-                                      ▼
-                            ┌────────────────────┐
-                            │   PostgreSQL 16    │
-                            │   FTS + pg_trgm    │
-                            └─────────┬──────────┘
-                                      │
-                                      ▼
-                            ┌────────────────────┐
-                            │   Next.js 15 App   │
-                            │   Server-rendered  │
-                            └────────────────────┘
+                    Internet
+                       │
+                       ▼
+              ┌──────────────────┐
+              │   Cloudflare     │  (volumetric DDoS, TLS, geo)
+              └────────┬─────────┘
+                       │
+                       ▼
+            ┌──────────────────────┐
+            │ Reverse proxy / LB   │  Fly proxy / Render / etc.
+            │ (health-check polled │  /api/health every 30s
+            │  every 30s, 5s tmo)  │
+            └──────────┬───────────┘
+                       │
+       ┌───────────────┼───────────────┐
+       │ (HTTP only)   │               │ (no HTTP routed in)
+       ▼               │               ▼
+┌──────────────┐       │      ┌──────────────────────┐
+│  Web         │       │      │  Worker              │
+│  container   │       │      │  container           │
+│  Node 22 +   │       │      │  Node 22 +           │
+│  Next.js 15  │       │      │  scheduler (24h)     │
+│  PROCESS_    │       │      │  PROCESS_ROLE=worker │
+│   ROLE=web   │       │      │  - boot orphan sweep │
+│  - no DDL    │       │      │  - ensureSchema      │
+│  - no sched. │       │      │  - runFullRefresh()  │
+│  1 vCPU/1GB  │       │      │  1 vCPU / 1 GB       │
+└──────┬───────┘       │      └──────┬───────────────┘
+       │               │             │
+       │ web pool      │             │ ingest pool
+       │ max=10        │             │ max=2 (left 1 slot for web)
+       │ keepAlive ✓   │             │ keepAlive ✓
+       │ 'error' ✓     │             │ 'error' ✓
+       │               │             │ statement_timeout=300s
+       │               │             │
+       │               ▼             │
+       │      Internal 6PN network    │
+       │      vulnscope-db.flycast    │
+       │               │             │
+       │               ▼             │
+       └─────► ┌──────────────────────┐ ◄──────
+              │  Postgres 16          │
+              │  shared_buffers ≈256M │
+              │  pg_trgm + tsvector   │
+              │  1 vCPU / 1 GB        │
+              │                       │
+              │  Tables:              │
+              │   vulnerabilities (243MB / 75k rows)
+              │   affected         (78 MB / 120k)
+              │   refs             (60 MB / 239k)
+              │   cvss_scores      (15 MB / 67k)
+              │   packages         (4.8 MB / 16k)
+              │   vuln_aliases / sync_jobs / ...
+              │                       │
+              │  Indexes (perf 0006 + 0007):
+              │   idx_affected_eco_pkg
+              │     (ecosystem, package_id) INCLUDE (cve_id)
+              │   idx_cvss_cve_score
+              │     (cve_id, base_score DESC NULLS LAST)
+              │   idx_vuln_kev_added
+              │     partial WHERE kev=true
+              │   idx_vuln_epss_score_partial
+              │     partial WHERE epss_score IS NOT NULL
+              └───────────────────────┘
+
+External data sources (the worker pulls these):
+  • OSV.dev bulk zips    — 14 ecosystems, daily (206 MB zip for npm)
+  • CISA KEV             — daily JSON
+  • FIRST.org EPSS       — daily CSV.gz (300k+ rows)
+  • NVD API              — rate-limited backfill, last-resort CVSS
 ```
+
+`PROCESS_ROLE` is the only thing distinguishing the two containers.
+Same image, same `node server.js` entrypoint;
+`src/instrumentation-node.ts` reads the env var and decides whether
+to wake the scheduler. Web never touches DDL or ingest; worker never
+serves a routed HTTP request.
+
+---
+
+### Ingest flow (worker process)
+
+This is where memory and event-loop discipline matter most. An OSV
+zip can be 206 MB compressed → ~1.5 GB inflated; naive handling
+OOMs a 1 GB container in 30 seconds.
+
+```
+                  worker container boots
+                          │
+                          ▼
+         ┌────────────────────────────────────┐
+         │ instrumentation-node.ts            │
+         │  1. ensureIngestSchema()           │ — self-healing DDL
+         │  2. clearOrphanedRefreshesOnBoot() │ — wipe stale sync_jobs
+         │  3. startScheduler()               │ — register 24h timer
+         └─────────────────┬──────────────────┘
+                           │
+                           ▼  every 24h tick
+         ┌────────────────────────────────────┐
+         │ reapStaleJobs()                    │ — child >5min idle: fail
+         │                                     │ — refresh >3h:   fail
+         │ shouldSkipScheduled()? if yes: skip│
+         │ INSERT sync_jobs (source='refresh')│ — parent row
+         └─────────────────┬──────────────────┘
+                           │
+                           ▼  runFullRefresh()
+        ┌────────────────────────────────────────────┐
+        │ for each source: kev, osv:*, epss, nvd, … │
+        │   withHeartbeatTimeout(fn, label, start):  │
+        │      ┌─────────────────────────────────┐   │
+        │      │ JobHandle = startJob(label)     │   │ — INSERT sync_jobs row
+        │      │ try {                            │   │
+        │      │   while (entry = nextEntry()) {  │   │ ←──── yauzl lazy pull
+        │      │     parse + bufferRecord         │   │
+        │      │     if (++count % 50 === 0) {    │   │
+        │      │       await flush(buf, db)       │   │ ←──── 5 child-table
+        │      │       buf = emptyBuffers()       │   │      INSERTs in parallel
+        │      │       await setImmediate yield   │   │
+        │      │     }                            │   │
+        │      │     await setImmediate yield     │   │ ←──── per-record yield
+        │      │     job.progress({seen,changed}) │   │      (coalesced to 1/sec)
+        │      │   }                              │   │      → writes heartbeat
+        │      │ } finally {                      │   │
+        │      │   job.finish({ok|err})           │   │
+        │      │ }                                │   │
+        │      └─────────────────────────────────┘   │
+        │   ┌─ in parallel:                          │
+        │   │   poller: SELECT last_heartbeat_at     │ ← every 30s, web pool
+        │   │   if idle >5min → ctrl.abort()         │
+        │   │   if wall-clock >4h (or 90m for nvd)   │
+        │   │      → ctrl.abort()                    │
+        │   └─                                       │
+        └────────────────────────────────────────────┘
+                           │
+                           ▼  all sources done
+                ┌──────────────────────────┐
+                │ UPDATE sync_jobs         │  parent row → success
+                │ release in-flight flag   │
+                │ schedule next tick (24h) │
+                └──────────────────────────┘
+```
+
+**Memory discipline inside processChunk (the only loop that matters)**:
+
+```
+50 records × ~7 KB JSON each = 350 KB per chunk  ← bounded buffer
+   │
+   ├─ JSON.parse + zod.safeParse + bufferRecord (CPU bound)
+   │     after EACH record: await setImmediate yield
+   │     ─ event loop gets a turn every ~10-40 ms
+   │     ─ Fly health check (5s tmo) is never starved
+   │
+   ├─ flush(buf, db):                                ← drains the chunk
+   │     await flushVulns()         ← parent (FK target) first
+   │     await Promise.all([        ← children in parallel
+   │         flushCvss(),
+   │         flushAffected(),       ← 1000-row INSERTs (split if >1000)
+   │         flushRefs(),
+   │         flushAliases(),
+   │     ])
+   │     each statement < 5 min (ingest pool statement_timeout)
+   │
+   ├─ buf = emptyBuffers()                          ← chunk done, drop
+   ├─ pkgCache shrunk if size >50k                  ← bounded cache
+   └─ await setImmediate yield                      ← let V8 GC
+
+    RSS stays flat at 220-480 MB regardless of total
+    zip size. The 1.48 GB high-water mark from the old
+    unzipper push-based implementation is gone.
+```
+
+**The yauzl swap, in one diagram**:
+
+```
+old (unzipper, push-based):                new (yauzl, lazyEntries=true):
+
+  fs.createReadStream(zip)                   const zip = await openZip(zip)
+        │
+        ▼
+  unzipper.Parse() ──► internal              loop:
+     emits "entry"     buffer                  entry = await nextEntry(zip)
+     unconditionally   GROWS                       ↑
+        │                                          │ pull. yauzl does nothing
+        ▼                                          │ between calls. zero
+  for await (entry):                               │ in-flight buffer.
+    await processChunk()  ← await blocks       if !entry: break
+    (but unzipper keeps                        if skipByName: continue
+     pushing entries to                        const stream =
+     internal buffer →                           await openReadStream(entry)
+     RSS 1481 MB)                              ← only NOW we inflate
+                                               buffer = await drain(stream)
+
+  result:                                     result:
+    RSS 1481 MB @ chunk=20                      RSS 220-480 MB stable
+    OOM in ~30 s on 1 GB                        runs to completion on 1 GB
+```
+
+---
+
+### Web flow (SSR request, e.g. `/zh`)
+
+This is where Postgres performance shows up. Pre-optimisation
+homepage was 26 s under modest traffic; today is ~0.3 s warm.
+
+```
+                  GET https://your.domain/zh
+                          │
+                          ▼
+                 CDN (Cloudflare, optional)
+                          │
+                          ▼
+                 Fly proxy / LB
+                  ┌── load-balances ──┐
+                  ▼                   ▼
+            web container        (other web container if scaled)
+                  │
+                  ▼
+        ┌─────────────────────────┐
+        │ src/middleware.ts       │  ─ token-bucket rate limit
+        │  bucketForPath(/zh):    │     identityHint:"ip-only"
+        │    → "page_view"        │     ip from CF-Connecting-IP /
+        │  checkLimit(...)        │       Fly-Client-IP / XFF
+        │  if !allow: return 429  │
+        │  else: intl(req)        │  ─ then next-intl locale handling
+        └────────────┬────────────┘
+                     │
+                     ▼  (i18n done)
+        ┌─────────────────────────────────────────────┐
+        │ src/app/[locale]/page.tsx                   │
+        │  Promise.all([                              │
+        │    getDashboardStats(),      ← 60s in-mem cache, hits PG once/min
+        │    getRecentKev(8),          ← unstable_cache(60s)
+        │    getRecentVulns(15),       ← unstable_cache(60s)
+        │    getFreshness(),
+        │    isIngestRunning(),
+        │  ]);                                        │
+        │  for eco of FEATURED_ECOSYSTEMS:            │
+        │     await getTopPackages(eco, 8);           │ ← SEQUENTIAL, each
+        │                                              │   unstable_cache(60s)
+        │  render JSX                                 │
+        └──────────────────┬──────────────────────────┘
+                           │
+              (only on cold cache, otherwise serves from in-memory)
+                           │
+                           ▼
+                  ┌────────────────────┐
+                  │  web pg pool       │
+                  │  max=10, keepAlive │
+                  │  'error' listener  │
+                  └─────────┬──────────┘
+                            │
+                            ▼
+                  ┌────────────────────┐
+                  │ Postgres 16        │
+                  │ shared_buffers     │
+                  │ holds hot indexes  │
+                  │ and TOAST headers  │
+                  │                    │
+                  │ getTopPackages('npm', 8):
+                  │   plan: Index Only Scan
+                  │     using idx_affected_eco_pkg
+                  │   55 ms (was 21 s)
+                  │                    │
+                  │ getDashboardStats():
+                  │   6 COUNT(*) subqueries
+                  │   ~50 ms warm, 5-15 s cold
+                  │   → 60s in-mem cache hides cold path
+                  │                    │
+                  │ getRecentKev(8):    │
+                  │   Index Scan using  │
+                  │     idx_vuln_kev_added (partial)
+                  │   < 1 ms            │
+                  └────────────────────┘
+```
+
+**Why warm-cache SSR is ~0.3 s end-to-end**:
+
+```
+network in       ~50 ms (TLS handshake amortised by Keep-Alive)
+middleware       ~5 ms  (Map<string, Bucket> token check)
+next-intl        ~2 ms
+page render      ~5 ms  (all data from unstable_cache, no PG hit)
+React stream    ~30 ms  (gzip + send)
+                ───────
+total            ~92 ms server, ~300 ms with network
+```
+
+**Why pre-optimisation cold-cache SSR was 26 s**:
+
+```
+6 × getTopPackages parallel             10-15 s
+  (each was a full-table aggregate
+   over packages × affected × vulnerabilities,
+   no index covering ecosystem path,
+   so PG fell back to sequential scan
+   of 75k-row vulnerabilities for each
+   parallel call, all thrashing the
+   buffer cache → IO:DataFileRead waits)
+
+getDashboardStats sequential subqueries  3-5 s
+getRecentVulns LATERAL on cvss_scores    2-3 s
+getRecentKev kev_added_at sort           1-2 s
+network + render                         < 1 s
+                                       ─────────
+total                                    20-26 s
+```
+
+**Three fixes that made this fast**:
+
+1. **Index `idx_affected_eco_pkg (ecosystem, package_id) INCLUDE (cve_id)`** —
+   the killer. PG can answer `getTopPackages` with an index-only scan,
+   never touching the heap. `COUNT(DISTINCT cve_id)` becomes cheap
+   because `cve_id` is carried in the index leaf via `INCLUDE`. EXPLAIN:
+   21 000 ms → 55 ms.
+
+2. **Driving table flip** — `getTopPackages` used to be
+   `FROM packages p WHERE p.ecosystem=$1`. Switched to
+   `FROM affected a WHERE a.ecosystem=$1` (still joins to packages
+   for the name, but PG enters via the new index directly).
+
+3. **Cache layered above both** — `unstable_cache(60s)` on every
+   read-only fetch. Cold path runs at most once per minute per
+   query+args combination; everyone else gets the in-process cached
+   result in 0 ms.
+
+---
+
+### Version match & CVSS modules
 
 Version range comparison lives in `src/lib/version-match.ts` and walks the
 OSV `events[]` form (`introduced` / `fixed` / `last_affected` / `limit`)
