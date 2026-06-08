@@ -16,6 +16,7 @@ import { z } from "zod";
 import { ok, fail } from "@/lib/envelope";
 import { proAuth } from "@/lib/pro-bridge";
 import { ECOSYSTEMS } from "@/lib/ecosystems";
+import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -35,7 +36,7 @@ function isPro(status: string | null | undefined): boolean {
   return !!status && ACTIVE_STATUSES.has(status);
 }
 
-export async function GET() {
+export const GET = withRateLimit("mutation", async () => {
   const pro = await proAuth();
   if (!pro) return fail(503, "pro_unavailable", "Pro features are not enabled on this build");
 
@@ -60,9 +61,9 @@ export async function GET() {
     console.error("[watchlist GET] failed:", e);
     return fail(502, "list_failed", "Could not load watchlist");
   }
-}
+});
 
-export async function POST(req: NextRequest) {
+export const POST = withRateLimit("mutation", async (req: NextRequest) => {
   const pro = await proAuth();
   if (!pro) return fail(503, "pro_unavailable", "Pro features are not enabled on this build");
 
@@ -124,4 +125,4 @@ export async function POST(req: NextRequest) {
     console.error("[watchlist POST] addWatch failed:", e);
     return fail(502, "add_failed", "Could not add to watchlist");
   }
-}
+});

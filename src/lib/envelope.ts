@@ -25,10 +25,22 @@ export function ok<T>(data: T, meta?: Record<string, unknown>) {
   return withCors(NextResponse.json({ data, meta, errors: null }));
 }
 
-export function fail(status: number, code: string, message: string, field?: string) {
+export function fail(
+  status: number,
+  code: string,
+  message: string,
+  field?: string,
+  extraHeaders?: Record<string, string>,
+) {
   const err: ApiError = { code, message };
   if (field) err.field = field;
-  return withCors(NextResponse.json({ data: null, meta: null, errors: [err] }, { status }));
+  const res = withCors(
+    NextResponse.json({ data: null, meta: null, errors: [err] }, { status }),
+  );
+  if (extraHeaders) {
+    for (const [k, v] of Object.entries(extraHeaders)) res.headers.set(k, v);
+  }
+  return res;
 }
 
 /** Preflight handler for CORS. Routes that accept POST should re-export

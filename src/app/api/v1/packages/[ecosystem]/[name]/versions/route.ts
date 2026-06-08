@@ -9,20 +9,23 @@
  * Empty array if the package is unknown OR if OSV only has open-ended
  * range data — callers should fall back to a free-text input.
  */
+import type { NextRequest } from "next/server";
 import { ok } from "@/lib/envelope";
 import { getPackageVersions } from "@/lib/queries";
+import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(
-  _req: Request,
-  ctx: { params: Promise<{ ecosystem: string; name: string }> },
-) {
-  const { ecosystem, name } = await ctx.params;
-  const versions = await getPackageVersions(
-    decodeURIComponent(ecosystem),
-    decodeURIComponent(name),
-  );
-  return ok(versions);
-}
+export const GET = withRateLimit(
+  "package_detail",
+  async (_req: NextRequest, ctx: { params: Promise<{ ecosystem: string; name: string }> }) => {
+    const { ecosystem, name } = await ctx.params;
+    const versions = await getPackageVersions(
+      decodeURIComponent(ecosystem),
+      decodeURIComponent(name),
+    );
+    return ok(versions);
+  },
+  { identityHint: "ip-only" },
+);

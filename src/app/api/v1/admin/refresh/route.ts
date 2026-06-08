@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { fail } from "@/lib/envelope";
+import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,7 @@ function isAuthorized(req: NextRequest): boolean {
   return host.startsWith("localhost") || host.startsWith("127.0.0.1");
 }
 
-export async function POST(req: NextRequest) {
+export const POST = withRateLimit("admin", async (req: NextRequest) => {
   if (!isAuthorized(req)) {
     return fail(401, "UNAUTHORIZED", "set ADMIN_TOKEN env var or call from localhost");
   }
@@ -45,4 +46,4 @@ export async function POST(req: NextRequest) {
       "worker boot. To force a refresh, restart the worker machine: " +
       "`fly machine restart <worker-id>`.",
   );
-}
+});

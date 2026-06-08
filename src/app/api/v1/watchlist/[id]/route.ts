@@ -6,16 +6,17 @@
  * regardless of whether the id doesn't exist at all or belongs to
  * someone else.
  */
+import type { NextRequest } from "next/server";
 import { fail, ok } from "@/lib/envelope";
 import { proAuth } from "@/lib/pro-bridge";
+import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function DELETE(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> },
-) {
+export const DELETE = withRateLimit(
+  "mutation",
+  async (_req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
   const pro = await proAuth();
   if (!pro) return fail(503, "pro_unavailable", "Pro features are not enabled on this build");
 
@@ -39,4 +40,4 @@ export async function DELETE(
     console.error("[watchlist DELETE] failed:", e);
     return fail(502, "delete_failed", "Could not remove from watchlist");
   }
-}
+});

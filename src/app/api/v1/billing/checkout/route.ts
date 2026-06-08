@@ -14,12 +14,14 @@
  * enabled, otherwise 404.
  */
 import { proAuth } from "@/lib/pro-bridge";
+import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(req: Request) {
+export const POST = withRateLimit("mutation", async (req: NextRequest) => {
   const pro = await proAuth();
   if (!pro) {
     return NextResponse.json({ error: "Pro tier not enabled" }, { status: 404 });
@@ -68,4 +70,4 @@ export async function POST(req: Request) {
       { status: 502 },
     );
   }
-}
+});

@@ -92,9 +92,9 @@ runs upsert only the records whose `modified` actually advanced.
 #### Reliability
 
 A full OSV refresh runs for an hour or two and touches every record
-in every zip. Five layered safety nets keep a misbehaving upstream,
-a network blip, or a runaway ingest from breaking the user-facing
-web tier:
+in every zip. Six layered safety nets keep a misbehaving upstream,
+a network blip, a runaway ingest, or a hostile client from breaking
+the user-facing web tier:
 
 - **Web / worker process split.** Two Fly process groups share one
   Docker image: the `web` group runs Next.js only, the `worker` group
@@ -133,6 +133,22 @@ web tier:
   which is the orchestrator wrapper and doesn't heartbeat itself.
   Heartbeat-based (not started_at-based) so a process crash during
   ingest gets cleaned up in minutes instead of the next reboot.
+- **Per-route rate limiting.** Every public API route is wrapped with
+  a token-bucket limiter (`src/lib/rate-limit.ts`). Cloudflare in front
+  of `vulnscope-tw.fly.dev` blocks volumetric attacks at the edge, but
+  attackers can bypass to the `.fly.dev` domain directly — without
+  app-layer limits, one curl loop on `/api/v1/packages/autocomplete`
+  saturates the 512 MB Postgres machine. Identity precedence is
+  `signed-in user > CF-Connecting-IP > Fly-Client-IP > X-Forwarded-For`.
+  Signed-in users get 3× capacity on every bucket. Buckets are tight
+  on the expensive shapes (`autocomplete` 60/min, `check_batch` 10/min,
+  `auth` 10/min — the credential-stuffing target) and loose on lookups
+  (`vuln_detail`, `package_detail` 120/min). `/api/health` and the
+  Polar webhook are exempt; OPTIONS preflight bypasses the limiter
+  entirely. In-memory store with a 50 000-entry hard cap and
+  probabilistic eviction so a botnet cycling source IPs can't OOM the
+  process. Single web machine today; swap the store for Redis or
+  Postgres when we scale to ≥ 2.
 
 #### Memory profile
 
