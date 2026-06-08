@@ -150,7 +150,14 @@ export interface UpsertCtx {
 // and Fly health checks don't get starved during ingest.
 const PARSE_CHUNK = 50;
 const PARSE_CONCURRENCY = 2;
-const FLUSH_INSERT_BATCH = 1000; // rows per single INSERT statement (per child table)
+// rows per single INSERT statement (per child table). Lowered from
+// 1000 → 500 after osv:npm hit statement_timeout in production: the
+// vulnerabilities table now carries GIN+trgm indexes whose maintenance
+// cost scales superlinearly with batch size on Fly shared CPU.
+// 500 keeps each statement comfortably under the (now 5min) timeout
+// while still keeping wire round-trips amortized — ~440 statements
+// per full npm ingest vs. ~880, both negligible vs. parse cost.
+const FLUSH_INSERT_BATCH = 500;
 const PKG_CACHE_HIGH_WATER = 50_000;
 const RSS_LOG_EVERY_N_CHUNKS = 20;
 
