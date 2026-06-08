@@ -3,10 +3,6 @@ import { sql } from "drizzle-orm";
 import { db, pool } from "@/db/client";
 import { isAffected, type Ecosystem } from "./version-match";
 import type { OsvRange } from "./osv";
-// Start the daily-refresh scheduler the first time any page/API handler
-// imports this module. The scheduler dedupes via a global flag.
-import { startScheduler } from "./scheduler";
-startScheduler();
 
 export interface VulnRow {
   cve_id: string;

@@ -10,7 +10,8 @@ export interface JobHandle {
 
 export async function startJob(source: string): Promise<JobHandle> {
   const { rows } = await pool.query(
-    `INSERT INTO sync_jobs (source, status) VALUES ($1, 'running') RETURNING id`,
+    `INSERT INTO sync_jobs (source, status, last_heartbeat_at)
+       VALUES ($1, 'running', now()) RETURNING id`,
     [source],
   );
   const id = rows[0].id as number;
@@ -33,9 +34,14 @@ export async function startJob(source: string): Promise<JobHandle> {
     pendingSeen = null;
     pendingChanged = null;
     try {
+      // Heartbeat lands on every flush so the reaper can use a tight
+      // "no heartbeat for N minutes" threshold instead of trusting
+      // started_at alone (which can't tell hung-on-download apart from
+      // a legitimately long ingest).
       await pool.query(
         `UPDATE sync_jobs SET records_seen = COALESCE($2, records_seen),
-                              records_changed = COALESCE($3, records_changed)
+                              records_changed = COALESCE($3, records_changed),
+                              last_heartbeat_at = now()
           WHERE id = $1`,
         [id, s, c],
       );

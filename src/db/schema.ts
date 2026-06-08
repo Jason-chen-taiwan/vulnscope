@@ -149,6 +149,7 @@ export const syncJobs = pgTable(
     recordsSeen: integer("records_seen"),
     recordsChanged: integer("records_changed"),
     errorMessage: text("error_message"),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   },
   (t) => ({
     sourceStartedIdx: index("idx_sync_jobs_source_started").on(t.source, t.startedAt),

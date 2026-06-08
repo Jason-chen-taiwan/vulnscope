@@ -77,22 +77,29 @@ async function shouldSkipScheduled(): Promise<string | null> {
 }
 
 async function reapStaleJobs() {
-  // Only reap jobs that are genuinely stuck — i.e. older than a full
-  // OSV ingest could legitimately take. The slowest single ingest in
-  // practice (OSV npm) is ~5 minutes; the orchestrator's full run is
-  // ~30 minutes. Anything still 'running' after 2 hours is dead.
-  //
-  // Earlier this was 30 minutes which mis-reaped legitimate in-flight
-  // ingests when fly secrets changes caused machine restarts.
+  // Heartbeat-based reaper. Each ingest writes last_heartbeat_at on
+  // startJob() and on every progress() flush (~once/sec during hot
+  // parse), so "no heartbeat for >5min" is a tight, source-agnostic
+  // signal that the worker died. This replaces the prior 2h started_at
+  // threshold, which had two failure modes:
+  //   1. Ingests that hung silently before the first progress() call
+  //      (e.g. download stalled — actual 2026-06-05 osv:npm incident)
+  //      sat at status='running' for hours before getting reaped.
+  //   2. The reaper itself runs from a live Node process via setInterval.
+  //      When the process died mid-ingest, no one was around to run it,
+  //      so orphan rows persisted until the next manual server boot.
+  //   We can't fix (2) without an external cron, but a tighter threshold
+  //   means the orphan window on next boot is bounded by minutes not hours.
+  // COALESCE handles pre-migration rows whose heartbeat is NULL.
   try {
     const pool = await getPool();
     await pool.query(
       `UPDATE sync_jobs
           SET status = 'failed',
               finished_at = now(),
-              error_message = COALESCE(error_message, 'reaped: stale running job on boot')
+              error_message = COALESCE(error_message, 'reaped: no heartbeat for >5min')
         WHERE status = 'running'
-          AND started_at < now() - interval '2 hours'`,
+          AND COALESCE(last_heartbeat_at, started_at) < now() - interval '5 minutes'`,
     );
   } catch {
     /* ignore — DB might not be ready yet */
@@ -126,6 +133,10 @@ export function startScheduler() {
 }
 
 export async function tick(opts?: { manual?: boolean }): Promise<void> {
+  // Sweep orphans before each tick so manual /api/v1/admin/refresh calls
+  // (and the auto timer) start from a clean slate even if the prior
+  // server process died without clearing its rows.
+  await reapStaleJobs();
   if (!opts?.manual) {
     const reason = await shouldSkipScheduled();
     if (reason) {

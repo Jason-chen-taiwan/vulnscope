@@ -45,10 +45,40 @@ function canonicalizeEco(input: string): string {
   return input.split(":")[0];
 }
 
-async function downloadZipToFile(url: string, dest: string): Promise<void> {
-  const res = await fetch(url);
+async function downloadZipToFile(
+  url: string,
+  dest: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(url, { signal });
   if (!res.ok || !res.body) throw new Error(`OSV fetch failed: ${res.status} ${url}`);
-  await pipeline(Readable.fromWeb(res.body as never), createWriteStream(dest));
+  // pipeline AbortSignal aborts both ends — if the orchestrator's per-source
+  // timeout fires mid-download, the partial file is closed and removed
+  // (via the runOsvIngest finally that rms the work tmpdir).
+  await pipeline(Readable.fromWeb(res.body as never), createWriteStream(dest), { signal });
+}
+
+/**
+ * HEAD probes should never hang. GCS objects respond in <500ms in practice;
+ * anything past 30s is a network problem we want surfaced immediately so
+ * the orchestrator can record the failure and move on. Pre-fix, a hanging
+ * HEAD blocked the whole ingest indefinitely — sync_jobs row stayed at
+ * status='running' with records_seen=NULL forever (root cause of the
+ * 2026-06-05 osv:npm 3-day stall).
+ */
+const HEAD_TIMEOUT_MS = 30_000;
+
+async function headWithTimeout(url: string, outerSignal?: AbortSignal) {
+  const localCtrl = new AbortController();
+  const timer = setTimeout(() => localCtrl.abort(new Error("HEAD timeout")), HEAD_TIMEOUT_MS);
+  const onOuterAbort = () => localCtrl.abort();
+  outerSignal?.addEventListener("abort", onOuterAbort, { once: true });
+  try {
+    return await fetch(url, { method: "HEAD", signal: localCtrl.signal });
+  } finally {
+    clearTimeout(timer);
+    outerSignal?.removeEventListener("abort", onOuterAbort);
+  }
 }
 
 export interface RunOsvOptions {
@@ -75,7 +105,7 @@ export async function runOsvIngest(
     // Zip-level incremental skip: HEAD the GCS object, compare its
     // Last-Modified header with what we stored last time. A no-change
     // tick is <1s instead of multi-minute download + decompress.
-    const headRes = await fetch(url, { method: "HEAD" });
+    const headRes = await headWithTimeout(url, opts?.signal);
     const upstreamMtime = headRes.headers.get("last-modified");
     const knownMtime = await getMeta(metaKey);
     if (upstreamMtime && knownMtime === upstreamMtime) {
@@ -87,7 +117,7 @@ export async function runOsvIngest(
     const work = await fs.mkdtemp(join(tmpdir(), "osv-"));
     const zipPath = join(work, "all.zip");
     try {
-      await downloadZipToFile(url, zipPath);
+      await downloadZipToFile(url, zipPath, opts?.signal);
 
       const ctx: UpsertCtx = {
         eco,
