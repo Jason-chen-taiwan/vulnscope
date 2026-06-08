@@ -53,12 +53,14 @@ const nextConfig: NextConfig = {
     // node_modules and we let Node resolve them at runtime.
     "better-auth",
     "@polar-sh/sdk",
-    // unzipper's Open/index.js lazy-requires @aws-sdk/client-s3 for
-    // S3 zip reading. We never touch that path, but Next.js's webpack
-    // tracer follows the require regardless and fails the build with
-    // "Module not found: Can't resolve '@aws-sdk/client-s3'".
-    // Externalizing lets Node's runtime resolver handle the optional
-    // require correctly.
+    // yauzl is the active zip reader (pull-based, lazyEntries mode)
+    // for OSV ingest. Externalizing keeps Next's webpack tracer from
+    // over-resolving its CJS internals at build time.
+    "yauzl",
+    // unzipper stays listed even though we no longer use it directly:
+    // it's a transitive dep of other tooling and its Open/index.js
+    // lazy-requires @aws-sdk/client-s3, which would otherwise fail
+    // the build with "Module not found: Can't resolve '@aws-sdk/client-s3'".
     "unzipper",
   ],
   experimental: {

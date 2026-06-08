@@ -10,6 +10,9 @@ allowBuilds:
   sharp: set this to true or false
   unrs-resolver: set this to true or false
 
+minimumReleaseAgeExclude:
+  - yauzl@3.4.0
+
 # Approve all transitive deps that ship native postinstall scripts.
 # pnpm 11 refuses to run unapproved postinstall scripts and exits 1 in
 # strict environments (like Docker build). Adding them here whitelists

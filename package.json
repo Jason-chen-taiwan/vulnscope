@@ -36,6 +36,7 @@
     "server-only": "^0.0.1",
     "undici": "^7.0.0",
     "unzipper": "^0.12.3",
+    "yauzl": "^3.4.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -45,6 +46,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/semver": "^7.5.8",
+    "@types/yauzl": "^3.3.0",
     "autoprefixer": "^10.4.20",
     "drizzle-kit": "^0.28.0",
     "eslint": "^9",
