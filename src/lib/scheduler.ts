@@ -93,12 +93,21 @@ async function reapStaleJobs() {
   // COALESCE handles pre-migration rows whose heartbeat is NULL.
   try {
     const pool = await getPool();
+    // EXCLUDE source='refresh' from reaping. refresh is the orchestrator
+    // wrapper that holds open while child ingests run; it doesn't write
+    // its own heartbeat (only the per-source JobHandles do), so a 5min
+    // no-heartbeat threshold misfires whenever a single child takes
+    // longer than 5min. tick()'s own try/finally already releases the
+    // refresh row when runFullRefresh returns; the 3h watchdog inside
+    // tick() catches a truly stuck orchestrator. Reaper covers child
+    // sources (osv:*, kev, epss, nvd, exploits) only — they DO heartbeat.
     await pool.query(
       `UPDATE sync_jobs
           SET status = 'failed',
               finished_at = now(),
               error_message = COALESCE(error_message, 'reaped: no heartbeat for >5min')
         WHERE status = 'running'
+          AND source <> 'refresh'
           AND COALESCE(last_heartbeat_at, started_at) < now() - interval '5 minutes'`,
     );
   } catch {

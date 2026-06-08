@@ -15,6 +15,19 @@ export const pool =
   globalThis.__pgPool ??
   new Pool({ connectionString, max: 10 });
 
+// CRITICAL: pg Pool emits 'error' when an idle client's connection is
+// terminated by the server (Fly Postgres maintenance, idle timeouts,
+// failover). With no listener, Node escalates it to uncaughtException
+// and kills the whole process — observed 2026-06-08 02:16:13, which
+// took down 15 in-flight ingests at once and crashed the refresh.
+// The 'error' event is informational; pg drops the dead client from
+// the pool on its own. We just need to acknowledge.
+if (!globalThis.__pgPool) {
+  pool.on("error", (err) => {
+    console.error("[web pool] idle client error:", err.message);
+  });
+}
+
 if (process.env.NODE_ENV !== "production") {
   globalThis.__pgPool = pool;
 }

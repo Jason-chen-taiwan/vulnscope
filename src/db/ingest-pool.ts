@@ -48,7 +48,26 @@ export const ingestPool =
     statement_timeout: 300_000,
     connectionTimeoutMillis: 30_000,
     application_name: "vulnscope-ingest",
+    // Send a TCP keepalive every ~10s. Fly Postgres closes truly idle
+    // connections silently; a keepalive packet keeps the kernel-level
+    // socket alive between INSERTs (one parse chunk can be 5-30s
+    // depending on ecosystem). Combined with the pool 'error' handler
+    // below this means a server-side drop just removes one client from
+    // the pool — the next query gets a fresh one — instead of taking
+    // down the whole Node process.
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
   });
+
+// See src/db/client.ts for why this listener is mandatory. Same story
+// here: an idle ingest connection dropped by Fly Postgres maintenance
+// would otherwise crash the process via uncaughtException and take
+// every in-flight source down with it.
+if (!globalThis.__pgIngestPool) {
+  ingestPool.on("error", (err) => {
+    console.error("[ingest pool] idle client error:", err.message);
+  });
+}
 
 if (process.env.NODE_ENV !== "production") {
   globalThis.__pgIngestPool = ingestPool;
