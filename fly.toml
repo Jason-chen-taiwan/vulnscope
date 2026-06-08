@@ -18,14 +18,13 @@ primary_region = 'nrt'
   PORT = '3000'
 
 [processes]
-  web    = "node server.js"
-  worker = "node server.js"
-
-[processes.web.env]
-  PROCESS_ROLE = "web"
-
-[processes.worker.env]
-  PROCESS_ROLE = "worker"
+  # PROCESS_ROLE is set via env-prefix in the command string itself.
+  # Fly's `[processes]` is a string→string map (inline-table syntax),
+  # so per-process env tables (`[processes.web.env]`) are not allowed
+  # in the same config — they'd require turning [processes] into a
+  # nested table, which conflicts with the string-map form Fly expects.
+  web    = "sh -c 'PROCESS_ROLE=web node server.js'"
+  worker = "sh -c 'PROCESS_ROLE=worker node server.js'"
 
 [[mounts]]
   source = 'vulnscope_data'
