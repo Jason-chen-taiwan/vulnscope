@@ -1,7 +1,11 @@
-# fly.toml app configuration file generated for vulnscope-tw on 2026-05-28T13:06:54+08:00
+# fly.toml app configuration file for vulnscope-tw
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# Two process groups share one Docker image:
+#   web    — Next.js HTTP server, no scheduler
+#   worker — scheduler + ingest, HTTP server unused
+# PROCESS_ROLE env tells instrumentation-node.ts which side to boot.
 #
+# See https://fly.io/docs/reference/configuration/ for syntax details.
 
 app = 'vulnscope-tw'
 primary_region = 'nrt'
@@ -13,21 +17,32 @@ primary_region = 'nrt'
   NODE_ENV = 'production'
   PORT = '3000'
 
+[processes]
+  web    = "node server.js"
+  worker = "node server.js"
+
+[processes.web.env]
+  PROCESS_ROLE = "web"
+
+[processes.worker.env]
+  PROCESS_ROLE = "worker"
+
 [[mounts]]
   source = 'vulnscope_data'
   destination = '/data'
+  processes = ['worker']
 
 [http_service]
   internal_port = 3000
   force_https = true
-  # We can't auto-stop the machine: the in-process scheduler runs a 30+
-  # minute OSV ingest every 24h and gets killed mid-flight if Fly stops
-  # us for idleness. Keep one machine running. Cost: ~$3/month, within
-  # the $5 free credit allowance.
+  # The worker runs the daily OSV ingest (1-2h) and gets killed mid-flight
+  # if Fly stops it for idleness — but auto_stop_machines applies per
+  # process group. Keep both running. min_machines_running below covers
+  # the web side; worker has its own [[vm]] block.
   auto_stop_machines = 'off'
   auto_start_machines = false
   min_machines_running = 1
-  processes = ['app']
+  processes = ['web']
 
   [http_service.concurrency]
     type = 'requests'
@@ -43,4 +58,10 @@ primary_region = 'nrt'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '2gb'
+  memory = '1gb'
+  processes = ['web']
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '1gb'
+  processes = ['worker']

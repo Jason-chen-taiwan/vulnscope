@@ -3,25 +3,41 @@
  * nodejs runtime (see instrumentation.ts) so unzipper/pg/etc. never
  * leak into the Edge bundle.
  *
+ * Process-role gated. The deployment runs two Fly process groups
+ * sharing one Docker image:
+ *
+ *   PROCESS_ROLE=web    — Next.js HTTP server only. No scheduler.
+ *   PROCESS_ROLE=worker — scheduler + ingest. HTTP server runs but
+ *                         is unused (Fly's http_service only routes
+ *                         to the web process group).
+ *
+ * Default is "web" so any environment without PROCESS_ROLE set
+ * (local dev, docker-compose, etc.) behaves like the public-facing
+ * server. To run the scheduler locally, set PROCESS_ROLE=worker.
+ *
+ * Worker boot does two things in order:
  *   1. ensureIngestSchema(): self-healing DDL that adds missing
  *      columns (e.g. sync_jobs.last_heartbeat_at) under an advisory
- *      lock. Runs BEFORE the scheduler so the first ingest tick can
- *      rely on schema features that newer code expects but the prod
- *      migration may not have applied yet.
- *
- *   2. startScheduler(): in-process 24h refresh + reaper. Single boot
- *      via Next's register() hook avoids the doubled-tick bug we hit
- *      when this lived as a top-level side effect in lib/queries.ts.
+ *      lock. Worker owns DDL so the web process never touches it.
+ *   2. startScheduler(): in-process 24h refresh + reaper.
  */
-import { ensureIngestSchema } from "@/lib/ingest/ensure-schema";
-import { startScheduler } from "@/lib/scheduler";
+// Top-level `await` requires this file to be a module. The dynamic
+// imports below are the only static dependencies; an explicit empty
+// export makes TS treat the file as ESM.
+export {};
 
-try {
-  await ensureIngestSchema();
-} catch (e) {
-  // Don't block server boot if DB is briefly unavailable — the ingest
-  // path will retry on its next tick via the same ensure-schema call.
-  console.error("[instrumentation] ensureIngestSchema failed at boot:", e);
+const role = process.env.PROCESS_ROLE ?? "web";
+
+if (role === "worker") {
+  const { ensureIngestSchema } = await import("@/lib/ingest/ensure-schema");
+  const { startScheduler } = await import("@/lib/scheduler");
+  try {
+    await ensureIngestSchema();
+  } catch (e) {
+    console.error("[instrumentation] ensureIngestSchema failed at boot:", e);
+  }
+  startScheduler();
+  console.log("[instrumentation] booted as PROCESS_ROLE=worker");
+} else {
+  console.log(`[instrumentation] booted as PROCESS_ROLE=${role} (scheduler disabled)`);
 }
-
-startScheduler();
