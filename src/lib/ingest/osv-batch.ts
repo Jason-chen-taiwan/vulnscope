@@ -596,6 +596,16 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
             /* per-record errors swallowed; aggregate metrics via callback */
           } finally {
             processed++;
+            // Yield after every record. JSON.parse + zod + bufferRecord is
+            // ~10-40ms of synchronous CPU; without this yield, 50 records
+            // back-to-back blocked the event loop for 1-3s and Fly's 5s
+            // health check started failing mid-ingest (observed
+            // 2026-06-08 02:42-02:45 UTC — proxy returned "no good
+            // candidate" for every region). PARSE_CONCURRENCY=2 means
+            // at most 2 records of work between yields → HTTP traffic
+            // and health checks get a turn within ~80ms regardless of
+            // chunk size.
+            await new Promise((r) => setImmediate(r));
           }
         }),
       ),
