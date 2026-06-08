@@ -31,7 +31,11 @@ function bucketForPath(pathname: string): BucketName {
   // pathname always starts with /xx/. Match against /xx/<segment>.
   if (/^\/[a-z]{2}\/search\b/.test(pathname)) return "search_page";
   if (/^\/[a-z]{2}\/insights\b/.test(pathname)) return "insights_page";
-  if (/^\/[a-z]{2}\/admin\b/.test(pathname)) return "admin";
+  // /<locale>/admin/* is the admin DASHBOARD (e.g. /zh/admin/jobs).
+  // Treat as page_view, NOT admin bucket. The `admin` bucket is for
+  // the mutating /api/v1/admin/* endpoints (which are also ADMIN_TOKEN
+  // gated). The dashboard auto-refreshes every 5s (12/min); admin
+  // bucket's 5/min cap would lock the operator out of their own UI.
   return "page_view";
 }
 

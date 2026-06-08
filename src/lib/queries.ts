@@ -428,7 +428,7 @@ export interface PackageListFilter {
   pageSize?: number;
 }
 
-export async function browsePackages(f: PackageListFilter) {
+async function _browsePackages(f: PackageListFilter) {
   const pageSize = Math.min(100, Math.max(1, f.pageSize ?? 50));
   const page = Math.max(1, f.page ?? 1);
   const offset = (page - 1) * pageSize;
@@ -523,6 +523,26 @@ export async function browsePackages(f: PackageListFilter) {
     items: rows as Array<{ ecosystem: string; name: string; cve_count: number; kev_count: number }>,
     total,
   };
+}
+
+/**
+ * Cache key for browsePackages. Every filter combination gets its own
+ * cache entry; the production traffic mix is dominated by the default
+ * /packages first page, so the cache hit rate on that one entry alone
+ * is very high. Free-text search (`q`) blows the cache up to a unique
+ * entry per query, which is fine — those entries also serve repeat
+ * searches for the same string.
+ */
+export function browsePackages(f: PackageListFilter) {
+  const key = [
+    "browsePackages",
+    f.q?.trim() ?? "",
+    f.ecosystem ?? "",
+    f.sort ?? "cves",
+    String(f.page ?? 1),
+    String(f.pageSize ?? 50),
+  ];
+  return unstable_cache(_browsePackages, key, { revalidate: SSR_CACHE_TTL_SEC })(f);
 }
 
 export async function autocompletePackages(prefix: string, limit = 10) {
