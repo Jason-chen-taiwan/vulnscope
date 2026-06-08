@@ -17,17 +17,25 @@ export interface TopPackageRow {
 }
 
 export async function getTopPackagesAllEcos(limit = 100): Promise<TopPackageRow[]> {
+  // Pre-aggregate from affected first (driven by idx_affected_pkg / its
+  // composite siblings), then JOIN packages by PK. Previously this drove
+  // from packages and forced a full scan of affected + vulnerabilities
+  // joins per package — observed RED in the query audit.
   const { rows } = await pool.query(
-    `SELECT p.ecosystem,
-            p.name,
-            COUNT(DISTINCT a.cve_id)::int AS cve_count,
-            COUNT(DISTINCT a.cve_id) FILTER (WHERE v.kev)::int AS kev_count,
-            MAX(v.epss_score)::float8 AS max_epss
-       FROM packages p
-       JOIN affected a ON a.package_id = p.id
-       JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      GROUP BY p.ecosystem, p.name
-      ORDER BY kev_count DESC, cve_count DESC
+    `WITH agg AS (
+       SELECT a.package_id,
+              COUNT(DISTINCT a.cve_id)::int AS cve_count,
+              COUNT(DISTINCT a.cve_id) FILTER (WHERE v.kev)::int AS kev_count,
+              MAX(v.epss_score)::float8 AS max_epss
+         FROM affected a
+         JOIN vulnerabilities v ON v.cve_id = a.cve_id
+        GROUP BY a.package_id
+     )
+     SELECT p.ecosystem, p.name,
+            agg.cve_count, agg.kev_count, agg.max_epss
+       FROM agg
+       JOIN packages p ON p.id = agg.package_id
+      ORDER BY agg.kev_count DESC, agg.cve_count DESC
       LIMIT $1`,
     [limit],
   );
@@ -70,17 +78,23 @@ export async function getEpssRising(limit = 100) {
 }
 
 export async function getEcosystemDeepDive(ecosystem: string, limit = 200) {
+  // Drive from affected via idx_affected_eco_pkg (ecosystem, package_id)
+  // INCLUDE (cve_id) — same trick that took getTopPackages from 21s to 55ms.
   const { rows } = await pool.query(
-    `SELECT p.name,
-            COUNT(DISTINCT a.cve_id)::int AS cve_count,
-            COUNT(DISTINCT a.cve_id) FILTER (WHERE v.kev)::int AS kev_count,
-            MAX(v.epss_score)::float8 AS max_epss
-       FROM packages p
-       JOIN affected a ON a.package_id = p.id
-       JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      WHERE p.ecosystem = $1
-      GROUP BY p.name
-      ORDER BY kev_count DESC, cve_count DESC
+    `WITH agg AS (
+       SELECT a.package_id,
+              COUNT(DISTINCT a.cve_id)::int AS cve_count,
+              COUNT(DISTINCT a.cve_id) FILTER (WHERE v.kev)::int AS kev_count,
+              MAX(v.epss_score)::float8 AS max_epss
+         FROM affected a
+         JOIN vulnerabilities v ON v.cve_id = a.cve_id
+        WHERE a.ecosystem = $1
+        GROUP BY a.package_id
+     )
+     SELECT p.name, agg.cve_count, agg.kev_count, agg.max_epss
+       FROM agg
+       JOIN packages p ON p.id = agg.package_id
+      ORDER BY agg.kev_count DESC, agg.cve_count DESC
       LIMIT $2`,
     [ecosystem, limit],
   );

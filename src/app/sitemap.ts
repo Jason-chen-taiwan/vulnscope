@@ -55,12 +55,19 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       }
     }
 
+    // Pre-aggregate from affected first, JOIN packages by PK after.
+    // Same pattern as browsePackages — driving from packages forced a
+    // full 120k-row scan of affected per page request.
     const { rows: pkgs } = await pool.query<{ ecosystem: string; name: string }>(
-      `SELECT p.ecosystem, p.name
-         FROM packages p
-         JOIN affected a ON a.package_id = p.id
-        GROUP BY p.ecosystem, p.name
-        ORDER BY COUNT(DISTINCT a.cve_id) DESC
+      `WITH agg AS (
+         SELECT package_id, COUNT(DISTINCT cve_id) AS cve_count
+           FROM affected
+          GROUP BY package_id
+       )
+       SELECT p.ecosystem, p.name
+         FROM agg
+         JOIN packages p ON p.id = agg.package_id
+        ORDER BY agg.cve_count DESC
         LIMIT 5000`,
     );
     for (const r of pkgs) {

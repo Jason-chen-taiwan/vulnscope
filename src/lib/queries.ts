@@ -129,18 +129,29 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
   const params: unknown[] = [];
   let p = 0;
 
+  // CTE name we'll splice into the FROM clause when the q branch needs
+  // package-name fuzzy match.
+  let pkgSearchCte = "";
   if (f.q && f.q.trim().length > 0) {
     const q = f.q.trim();
-    // Prefer FTS; fall back to trigram for non-English / typo cases.
+    // Old shape used `OR EXISTS (… package ILIKE '%X%' …)` inside the
+    // outer WHERE. That defeated the optimizer — package-name match
+    // ended up a full scan per vulnerability row. The CTE form below
+    // materialises the matching CVE set ONCE via the existing trigram
+    // index on packages.name, then the outer query just does an IN
+    // lookup against vulnerabilities PK.
     params.push(q);
     p++;
+    pkgSearchCte = `WITH pkg_match_cves AS (
+        SELECT DISTINCT a.cve_id
+          FROM packages p2
+          JOIN affected a ON a.package_id = p2.id
+         WHERE p2.name ILIKE '%' || $${p} || '%'
+      )`;
     where.push(
       `(search_tsv @@ plainto_tsquery('english', $${p})
          OR cve_id ILIKE '%' || $${p} || '%'
-         OR EXISTS (
-           SELECT 1 FROM affected a2 JOIN packages p2 ON p2.id = a2.package_id
-            WHERE a2.cve_id = v.cve_id AND p2.name ILIKE '%' || $${p} || '%'
-         ))`,
+         OR cve_id IN (SELECT cve_id FROM pkg_match_cves))`,
     );
   }
   if (f.kev === true) where.push("v.kev = true");
@@ -161,13 +172,17 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const baseFrom = `FROM vulnerabilities v ${whereSql}`;
-  const totalRes = await pool.query(`SELECT COUNT(*)::int AS c ${baseFrom}`, params);
+  const totalRes = await pool.query(
+    `${pkgSearchCte} SELECT COUNT(*)::int AS c ${baseFrom}`,
+    params,
+  );
   const total = (totalRes.rows[0] as { c: number }).c;
 
   // Severity rollup via a subquery: pick the highest scoring CVSS row.
   params.push(pageSize);
   params.push(offset);
   const sqlText = `
+    ${pkgSearchCte}
     SELECT v.cve_id, v.summary, v.description, v.published_at, v.modified_at,
            v.kev, v.kev_added_at,
            v.epss_score::float8 AS epss_score,
@@ -311,7 +326,30 @@ export async function checkPackageVersion(
   };
 }
 
-export async function getDashboardStats() {
+export interface DashboardStats {
+  new_today: number;
+  new_week: number;
+  critical_total: number;
+  kev_total: number;
+  package_total: number;
+  vuln_total: number;
+}
+
+// 60s in-memory cache. The six COUNT(*) subqueries each force buffer-cache
+// thrashing on the 243MB vulnerabilities table on our 512MB DB machine,
+// taking 20+ seconds on cold cache. The displayed numbers change at most
+// every few minutes during ingest, so a 60s TTL is generous from a UX
+// perspective and removes the per-pageview cost entirely. Per-process
+// memory (lives in the web Node process); two web machines would each
+// hold an independent copy — fine, both stale at most 60s.
+let dashboardStatsCache: { at: number; value: DashboardStats } | null = null;
+const DASHBOARD_STATS_TTL_MS = 60_000;
+
+export async function getDashboardStats(): Promise<DashboardStats> {
+  const now = Date.now();
+  if (dashboardStatsCache && now - dashboardStatsCache.at < DASHBOARD_STATS_TTL_MS) {
+    return dashboardStatsCache.value;
+  }
   const { rows } = await pool.query(`
     SELECT
       (SELECT COUNT(*)::int FROM vulnerabilities WHERE published_at > now() - interval '1 day') AS new_today,
@@ -321,10 +359,9 @@ export async function getDashboardStats() {
       (SELECT COUNT(*)::int FROM packages) AS package_total,
       (SELECT COUNT(*)::int FROM vulnerabilities) AS vuln_total
   `);
-  return rows[0] as {
-    new_today: number; new_week: number; critical_total: number;
-    kev_total: number; package_total: number; vuln_total: number;
-  };
+  const value = rows[0] as DashboardStats;
+  dashboardStatsCache = { at: now, value };
+  return value;
 }
 
 export async function getRecentKev(limit = 10) {
@@ -377,45 +414,92 @@ export async function browsePackages(f: PackageListFilter) {
   const pageSize = Math.min(100, Math.max(1, f.pageSize ?? 50));
   const page = Math.max(1, f.page ?? 1);
   const offset = (page - 1) * pageSize;
-  const where: string[] = [];
+  const pkgWhere: string[] = [];
   const params: unknown[] = [];
   let p = 0;
   if (f.q && f.q.trim()) {
     params.push(f.q.trim());
     p++;
-    where.push(`p.name ILIKE '%' || $${p} || '%'`);
+    pkgWhere.push(`p.name ILIKE '%' || $${p} || '%'`);
   }
   if (f.ecosystem) {
     params.push(f.ecosystem);
     p++;
-    where.push(`p.ecosystem = $${p}`);
+    pkgWhere.push(`p.ecosystem = $${p}`);
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const pkgWhereSql = pkgWhere.length ? `WHERE ${pkgWhere.join(" AND ")}` : "";
 
+  // Count over packages alone — fast, only touches the 15k-row table.
   const totalRes = await pool.query(
-    `SELECT COUNT(*)::int AS c FROM packages p ${whereSql}`,
+    `SELECT COUNT(*)::int AS c FROM packages p ${pkgWhereSql}`,
     params,
   );
   const total = (totalRes.rows[0] as { c: number }).c;
 
+  // Previously this query did `FROM packages p LEFT JOIN affected a LEFT
+  // JOIN vulnerabilities v ... GROUP BY p.ecosystem, p.name` which forced
+  // a full scan of the 120k-row affected table for every page request,
+  // even with pagination. The new shape pre-aggregates from affected
+  // first (using idx_affected_eco_pkg when ecosystem is filtered, or
+  // idx_affected_pkg as a smaller scan), then joins the 15k packages
+  // by PK. ORDER BY happens before pagination, so the aggregate is
+  // computed once over the eligible affected rows, not per page.
   const orderBy = f.sort === "name"
     ? "p.ecosystem, p.name"
-    : "kev_count DESC, cve_count DESC, p.name";
+    : "agg.kev_count DESC, agg.cve_count DESC, p.name";
 
-  params.push(pageSize);
-  params.push(offset);
+  // affected-side filter: same predicates as packages where applicable,
+  // so the pre-aggregate already excludes packages we won't show.
+  const affWhere: string[] = [];
+  const affParams: unknown[] = [];
+  let ap = 0;
+  if (f.ecosystem) {
+    affParams.push(f.ecosystem);
+    ap++;
+    affWhere.push(`a.ecosystem = $${ap}`);
+  }
+  const affWhereSql = affWhere.length ? `WHERE ${affWhere.join(" AND ")}` : "";
+
+  // Push name-filter + ecosystem-filter into the outer SELECT against
+  // packages so we can still narrow by p.name ILIKE without breaking
+  // the pre-aggregate's index path.
+  affParams.push(...params); // shift the original params after ap
+
+  const nameFilterClauses: string[] = [];
+  let np = ap;
+  if (f.q && f.q.trim()) {
+    np++;
+    nameFilterClauses.push(`p.name ILIKE '%' || $${np} || '%'`);
+  }
+  if (f.ecosystem) {
+    np++;
+    nameFilterClauses.push(`p.ecosystem = $${np}`);
+  }
+  const outerWhereSql = nameFilterClauses.length
+    ? `WHERE ${nameFilterClauses.join(" AND ")}`
+    : "";
+
+  affParams.push(pageSize);
+  affParams.push(offset);
   const { rows } = await pool.query(
-    `SELECT p.ecosystem, p.name,
-            COUNT(DISTINCT a.cve_id)::int AS cve_count,
-            COUNT(*) FILTER (WHERE v.kev)::int AS kev_count
+    `WITH agg AS (
+       SELECT a.package_id,
+              COUNT(DISTINCT a.cve_id)::int AS cve_count,
+              COUNT(*) FILTER (WHERE v.kev)::int AS kev_count
+         FROM affected a
+         JOIN vulnerabilities v ON v.cve_id = a.cve_id
+         ${affWhereSql}
+        GROUP BY a.package_id
+     )
+     SELECT p.ecosystem, p.name,
+            COALESCE(agg.cve_count, 0) AS cve_count,
+            COALESCE(agg.kev_count, 0) AS kev_count
        FROM packages p
-       LEFT JOIN affected a ON a.package_id = p.id
-       LEFT JOIN vulnerabilities v ON v.cve_id = a.cve_id
-       ${whereSql}
-       GROUP BY p.ecosystem, p.name
-       ORDER BY ${orderBy}
-       LIMIT $${p + 1} OFFSET $${p + 2}`,
-    params,
+       LEFT JOIN agg ON agg.package_id = p.id
+       ${outerWhereSql}
+      ORDER BY ${orderBy}
+      LIMIT $${np + 1} OFFSET $${np + 2}`,
+    affParams,
   );
   return {
     items: rows as Array<{ ecosystem: string; name: string; cve_count: number; kev_count: number }>,
@@ -426,20 +510,30 @@ export async function browsePackages(f: PackageListFilter) {
 export async function autocompletePackages(prefix: string, limit = 10) {
   const q = prefix.trim();
   if (q.length < 2) return [];
+  // Autocomplete is type-ahead — every keystroke fires this. The old shape
+  // did a LEFT JOIN affected with COUNT(DISTINCT cve_id) per match, which
+  // forced a scan of the 120k-row affected table on every keypress.
+  //
+  // Cve count was nice-to-have in the dropdown but not load-bearing for
+  // UX; consumers can fetch it after the user clicks. cve_count is kept
+  // in the return shape as 0 so existing callers don't break — they
+  // either ignore it or display it as "—".
+  //
+  // Result is now a pure packages-table query: trigram index on name
+  // serves the infix ILIKE, and prefix matches sort first via the CASE.
   const { rows } = await pool.query(
-    `SELECT p.ecosystem, p.name,
-            COUNT(DISTINCT a.cve_id)::int AS cve_count
-       FROM packages p
-       LEFT JOIN affected a ON a.package_id = p.id
-      WHERE p.name ILIKE $1 || '%'
-         OR p.name ILIKE '%' || $1 || '%'
-      GROUP BY p.ecosystem, p.name
-      ORDER BY (CASE WHEN p.name ILIKE $1 || '%' THEN 0 ELSE 1 END),
-               cve_count DESC, p.name
+    `SELECT ecosystem, name
+       FROM packages
+      WHERE name ILIKE '%' || $1 || '%'
+      ORDER BY (CASE WHEN name ILIKE $1 || '%' THEN 0 ELSE 1 END), name
       LIMIT $2`,
     [q, limit],
   );
-  return rows as Array<{ ecosystem: string; name: string; cve_count: number }>;
+  return rows.map((r) => ({ ...r, cve_count: 0 })) as Array<{
+    ecosystem: string;
+    name: string;
+    cve_count: number;
+  }>;
 }
 
 export async function getRecentVulns(limit = 10) {

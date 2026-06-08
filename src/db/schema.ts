@@ -40,6 +40,12 @@ export const vulnerabilities = pgTable(
     // express via .where(); we declare a non-partial approximation
     // here so db:generate doesn't try to drop the live index.
     kevAddedIdx: index("idx_vuln_kev_added").on(t.kevAddedAt),
+    // Partial index on (epss_score DESC NULLS LAST) WHERE epss_score
+    // IS NOT NULL — drives getEpssRising and helps sitemap.ts's
+    // kev OR epss>=0.05 bitmap-or. Migration 0007 creates the
+    // partial form; this is the column-only approximation so
+    // db:generate doesn't drop the live partial index.
+    epssScorePartialIdx: index("idx_vuln_epss_score_partial").on(t.epssScore),
   }),
 );
 
