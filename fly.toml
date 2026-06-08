@@ -26,11 +26,6 @@ primary_region = 'nrt'
   web    = "sh -c 'PROCESS_ROLE=web node server.js'"
   worker = "sh -c 'PROCESS_ROLE=worker node server.js'"
 
-[[mounts]]
-  source = 'vulnscope_data'
-  destination = '/data'
-  processes = ['worker']
-
 [http_service]
   internal_port = 3000
   force_https = true
