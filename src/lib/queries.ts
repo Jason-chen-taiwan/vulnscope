@@ -340,14 +340,24 @@ export async function getRecentKev(limit = 10) {
 }
 
 export async function getTopPackages(ecosystem: string, limit = 12) {
+  // Drive the join from `affected` rather than `packages`. The new
+  // composite index idx_affected_eco_pkg (ecosystem, package_id)
+  // INCLUDE (cve_id) — created in migration 0006 — lets PG enter the
+  // affected table via the ecosystem key directly and run COUNT(DISTINCT
+  // cve_id) as an index-only scan. Driving from `packages p WHERE
+  // p.ecosystem=...` previously forced a full scan of affected even
+  // though the same data was eligible for index narrowing.
+  // Production saw this query at 21-28s with IO:DataFileRead under
+  // homepage's 6-parallel call pattern; expected <200ms after the
+  // rewrite + index.
   const { rows } = await pool.query(
-    `SELECT p.ecosystem, p.name, COUNT(DISTINCT a.cve_id)::int AS cve_count,
+    `SELECT a.ecosystem, p.name, COUNT(DISTINCT a.cve_id)::int AS cve_count,
             COUNT(*) FILTER (WHERE v.kev)::int AS kev_count
-       FROM packages p
-       JOIN affected a ON a.package_id = p.id
+       FROM affected a
+       JOIN packages p ON p.id = a.package_id
        JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      WHERE p.ecosystem = $1
-      GROUP BY p.ecosystem, p.name
+      WHERE a.ecosystem = $1
+      GROUP BY a.ecosystem, p.name
       ORDER BY kev_count DESC, cve_count DESC
       LIMIT $2`,
     [ecosystem, limit],

@@ -34,6 +34,12 @@ export const vulnerabilities = pgTable(
     publishedIdx: index("idx_vuln_published").on(t.publishedAt),
     modifiedIdx: index("idx_vuln_modified").on(t.modifiedAt),
     kevIdx: index("idx_vuln_kev").on(t.kev),
+    // Partial index for getRecentKev's `WHERE kev=true ORDER BY
+    // kev_added_at DESC NULLS LAST`. Migration 0006 creates this as
+    // a partial index (WHERE kev=true) which drizzle 0.36 can't
+    // express via .where(); we declare a non-partial approximation
+    // here so db:generate doesn't try to drop the live index.
+    kevAddedIdx: index("idx_vuln_kev_added").on(t.kevAddedAt),
   }),
 );
 
@@ -53,6 +59,13 @@ export const cvssScores = pgTable(
     pk: primaryKey({ columns: [t.cveId, t.version, t.source] }),
     cveIdx: index("idx_cvss_cve").on(t.cveId),
     severityIdx: index("idx_cvss_severity").on(t.severity),
+    // Composite for searchVulns LATERAL "highest base_score per
+    // cve_id" subquery. Index order satisfies the ORDER BY so PG
+    // doesn't need a sort step. Migration 0006 creates this with
+    // base_score DESC NULLS LAST; drizzle's column-only form is a
+    // close enough approximation that db:generate won't try to drop
+    // the live index.
+    cveScoreIdx: index("idx_cvss_cve_score").on(t.cveId, t.baseScore),
   }),
 );
 
@@ -88,6 +101,12 @@ export const affected = pgTable(
     cveIdx: index("idx_affected_cve").on(t.cveId),
     pkgIdx: index("idx_affected_pkg").on(t.packageId),
     dedupe: uniqueIndex("uq_affected_dedupe").on(t.cveId, t.packageId, t.sourceId),
+    // Composite for getTopPackages / browsePackages ecosystem-scoped
+    // aggregates. Migration 0006 creates this with INCLUDE (cve_id)
+    // so PG can run COUNT(DISTINCT cve_id) as an index-only scan;
+    // drizzle's column-only form here is enough to stop db:generate
+    // from dropping the live index.
+    ecoPkgIdx: index("idx_affected_eco_pkg").on(t.ecosystem, t.packageId),
   }),
 );
 
