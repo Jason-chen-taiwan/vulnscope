@@ -232,15 +232,107 @@ export interface PackageBundle {
   }>;
 }
 
-export async function getPackageWithCves(
+/**
+ * 60s in-memory cache for getPackageWithCves.
+ *
+ * Justification: `/package/[eco]/[name]` is force-dynamic so every
+ * request re-runs the full bundle query. Most popular packages
+ * (Debian/chromium, Maven/log4j-core, ...) have 100-800 CVEs and
+ * the LATERAL CVSS join + ranges_json/versions_json columns make
+ * each row chunky. Hit rate is per (ecosystem, name) so it depends
+ * on whether the same page gets multiple views in 60s — heavy
+ * social-share or crawler traffic benefits the most.
+ *
+ * Eviction (no lru-cache dep): sweep-then-clear. On insert, first
+ * remove expired entries; if size still > MAX_ENTRIES, clear the
+ * whole Map (worst case one cache-miss storm, recovers in 60s).
+ * Strict LRU isn't worth the dep here.
+ *
+ * Cache key includes the limit so a 100-row render and an
+ * unlimited "show all" fetch don't collide.
+ */
+const PACKAGE_BUNDLE_CACHE = new Map<
+  string,
+  { at: number; value: PackageBundle | null }
+>();
+const PACKAGE_BUNDLE_TTL_MS = 60_000;
+const PACKAGE_BUNDLE_MAX_ENTRIES = 200;
+
+function bundleCacheKey(
   ecosystem: string,
   name: string,
-): Promise<PackageBundle | null> {
+  limit: number | undefined,
+): string {
+  return `${ecosystem}/${name}#${limit ?? "all"}`;
+}
+
+function bundleCacheGet(key: string): PackageBundle | null | undefined {
+  const hit = PACKAGE_BUNDLE_CACHE.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at >= PACKAGE_BUNDLE_TTL_MS) {
+    PACKAGE_BUNDLE_CACHE.delete(key);
+    return undefined;
+  }
+  return hit.value;
+}
+
+function bundleCacheSet(key: string, value: PackageBundle | null): void {
+  // Lazy sweep: clear expired before adding. Cheap when cache is
+  // small; bounded by MAX_ENTRIES.
+  const now = Date.now();
+  for (const [k, v] of PACKAGE_BUNDLE_CACHE) {
+    if (now - v.at >= PACKAGE_BUNDLE_TTL_MS) PACKAGE_BUNDLE_CACHE.delete(k);
+  }
+  if (PACKAGE_BUNDLE_CACHE.size >= PACKAGE_BUNDLE_MAX_ENTRIES) {
+    PACKAGE_BUNDLE_CACHE.clear();
+  }
+  PACKAGE_BUNDLE_CACHE.set(key, { at: now, value });
+}
+
+export interface PackageMetadata {
+  package: { id: number; ecosystem: string; name: string };
+  cve_count: number;
+}
+
+/**
+ * Lightweight metadata for `generateMetadata` — title and OG tags
+ * need the package identity + CVE count, not the full CVE bundle.
+ * Avoids a duplicate full-bundle fetch during SSR.
+ */
+export async function getPackageMetadata(
+  ecosystem: string,
+  name: string,
+): Promise<PackageMetadata | null> {
   const { rows: pkgRows } = await pool.query(
     `SELECT id, ecosystem, name FROM packages WHERE ecosystem = $1 AND name = $2`,
     [ecosystem, name],
   );
   if (pkgRows.length === 0) return null;
+  const pkg = pkgRows[0] as PackageMetadata["package"];
+  const { rows: cntRows } = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM affected WHERE package_id = $1`,
+    [pkg.id],
+  );
+  return { package: pkg, cve_count: cntRows[0]?.n ?? 0 };
+}
+
+export async function getPackageWithCves(
+  ecosystem: string,
+  name: string,
+  limit?: number,
+): Promise<PackageBundle | null> {
+  const cacheKey = bundleCacheKey(ecosystem, name, limit);
+  const cached = bundleCacheGet(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const { rows: pkgRows } = await pool.query(
+    `SELECT id, ecosystem, name FROM packages WHERE ecosystem = $1 AND name = $2`,
+    [ecosystem, name],
+  );
+  if (pkgRows.length === 0) {
+    bundleCacheSet(cacheKey, null);
+    return null;
+  }
   const pkg = pkgRows[0] as PackageBundle["package"];
 
   // The exploits subquery uses LEFT JOIN LATERAL with a guard for
@@ -256,6 +348,8 @@ export async function getPackageWithCves(
   const exploitsSelectFrag = exploitsExists
     ? `(SELECT COUNT(*)::int FROM exploits e WHERE e.cve_id = v.cve_id)`
     : `0`;
+
+  const limitSql = typeof limit === "number" && limit > 0 ? `LIMIT ${limit}` : "";
 
   const { rows: cves } = await pool.query(
     `
@@ -275,10 +369,13 @@ export async function getPackageWithCves(
       ) cs ON true
      WHERE a.package_id = $1
      ORDER BY v.kev DESC, cs.base_score DESC NULLS LAST, v.published_at DESC NULLS LAST
+     ${limitSql}
     `,
     [pkg.id],
   );
-  return { package: pkg, cves: cves as PackageBundle["cves"] };
+  const bundle: PackageBundle = { package: pkg, cves: cves as PackageBundle["cves"] };
+  bundleCacheSet(cacheKey, bundle);
+  return bundle;
 }
 
 export interface VersionCheckResult {

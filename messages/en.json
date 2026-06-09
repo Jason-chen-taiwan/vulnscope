@@ -82,6 +82,7 @@
     "kevAddedLabel": "Added to KEV"
   },
   "Package": {
+    "showAll": "Show all {n} CVEs",
     "totalCve": "{n, plural, =0 {No CVEs} =1 {1 total CVE} other {# total CVEs}}",
     "vulns": "All known vulnerabilities",
     "noCves": "No CVEs found for this package.",

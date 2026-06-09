@@ -3,8 +3,12 @@ import { checkPackageVersion } from "@/lib/queries";
 import { ok, fail, corsPreflight } from "@/lib/envelope";
 import { normalizePypiName } from "@/lib/osv";
 import { withRateLimit } from "@/lib/rate-limit";
+import { supportedEcosystems } from "@/lib/version";
 
 export const dynamic = "force-dynamic";
+
+// Compute once at module load — the dispatch table is static.
+const SUPPORTED = new Set(supportedEcosystems());
 
 export const GET = withRateLimit(
   "package_detail",
@@ -19,8 +23,13 @@ export const GET = withRateLimit(
     if (!version || version.trim() === "") {
       return fail(400, "MISSING_VERSION", "version query param is required", "version");
     }
-    if (ecosystem !== "npm" && ecosystem !== "PyPI") {
-      return fail(400, "UNSUPPORTED_ECOSYSTEM", `Phase 0 supports npm + PyPI only`, "ecosystem");
+    if (!SUPPORTED.has(ecosystem)) {
+      return fail(
+        400,
+        "UNSUPPORTED_ECOSYSTEM",
+        `Version checking for "${ecosystem}" is not supported. Supported: ${[...SUPPORTED].join(", ")}`,
+        "ecosystem",
+      );
     }
     const normalized = ecosystem === "PyPI" ? normalizePypiName(name) : name;
     const result = await checkPackageVersion(ecosystem, normalized, version.trim());

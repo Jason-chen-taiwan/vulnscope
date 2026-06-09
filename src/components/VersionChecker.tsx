@@ -21,13 +21,25 @@ interface CheckResponse {
   errors?: Array<{ code: string; message: string }>;
 }
 
-// The /check endpoint only knows how to compare semver (npm) and
-// PEP 440 (PyPI). Other ecosystems have their own version ordering
-// (Debian's dpkg --compare, Maven's spec, Alpine's apk, Go modules
-// pseudo-versions) — until version-match.ts grows comparators for
-// those, the API returns 400 UNSUPPORTED_ECOSYSTEM. Hide the
-// checker UI in that case so users don't waste a click.
-const SUPPORTED_ECOSYSTEMS = new Set(["npm", "PyPI"]);
+// All ecosystems with a dedicated comparator wired up in
+// src/lib/version/index.ts. Kept as a literal here so this
+// "use client" component doesn't have to import server-only code.
+// Add new ecosystems to both places.
+const SUPPORTED_ECOSYSTEMS = new Set([
+  "npm",
+  "PyPI",
+  "Maven",
+  "Go",
+  "RubyGems",
+  "Packagist",
+  "crates.io",
+  "NuGet",
+  "Hex",
+  "Hackage",
+  "Debian",
+  "Alpine",
+  "Bitnami",
+]);
 
 export function VersionChecker({
   ecosystem,

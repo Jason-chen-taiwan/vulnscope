@@ -86,6 +86,7 @@
     "vulns": "所有已知漏洞",
     "noCves": "這個套件目前沒有 CVE。",
     "noSummary": "(無摘要)",
+    "showAll": "顯示全部 {n} 筆 CVE",
     "checker": {
       "title": "✅ 檢查你的版本",
       "placeholderNpm": "例如 4.17.20",
