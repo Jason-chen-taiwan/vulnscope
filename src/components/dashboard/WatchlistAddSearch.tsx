@@ -129,7 +129,11 @@ export function WatchlistAddSearch({ onAdded, onLimitReached, disabled }: Props)
     if (!picked) return;
     setVersionsLoading(true);
     setVersions([]);
-    setSelectedVersion("");
+    // Default to "any version" so the Add button is immediately
+    // enabled — the select renders __any__ as the visible first
+    // option regardless, so this just brings state into line with
+    // what the user already sees on screen.
+    setSelectedVersion("__any__");
     setCustomVersion("");
     setCheck(null);
     (async () => {
