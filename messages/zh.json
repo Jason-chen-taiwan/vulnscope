@@ -177,6 +177,26 @@
     "popularHeading": "熱門套件",
     "popularCveCount": "{n} 個 CVE"
   },
+  "Account": {
+    "title": "調整方案",
+    "subtitle": "管理你的訂閱、更新付款資訊、查看付款紀錄。",
+    "currentPlan": "目前方案",
+    "statusLabel": "狀態",
+    "renewsLabel": "下次扣款",
+    "endsLabel": "結束於",
+    "freeTier": "免費方案",
+    "freeBody": "升級 Pro 可追蹤最多 50 個套件並收到每日通知。",
+    "upgradeCta": "升級 Pro — 月費 $9",
+    "manageHeading": "管理訂閱",
+    "manageBody": "更新信用卡、查看付款紀錄、取消訂閱等操作會跳轉到我們的付款服務 Polar。",
+    "openPolar": "前往訂閱管理頁",
+    "opening": "開啟中…",
+    "cancelHint": "取消後仍可使用到下次扣款日，之後自動降為免費方案。",
+    "errorTitle": "無法開啟訂閱管理頁",
+    "errorBody": "請稍後再試，或來信 support@vulnscope.dev。",
+    "backToDashboard": "← 回 Dashboard",
+    "linkLabel": "調整方案"
+  },
   "Pricing": {
     "title": "方案與價格",
     "intro": "VulnScope 採 MIT 開源——可自行 clone、自架、自行修改。我們託管的 Pro 方案則多了需要伺服器才能跑的功能：套件監控清單與每日 CVE 通知信。",

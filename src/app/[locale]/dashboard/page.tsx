@@ -1,4 +1,4 @@
-import { setRequestLocale } from "next-intl/server";
+import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { proAuth } from "@/lib/pro-bridge";
 import { getTopPackages } from "@/lib/queries";
@@ -30,6 +30,7 @@ export default async function DashboardPage({
   const { locale } = await params;
   const { welcome } = await searchParams;
   setRequestLocale(locale);
+  const tAccount = await getTranslations({ locale, namespace: "Account" });
 
   const pro = await proAuth();
   let user: Awaited<ReturnType<NonNullable<typeof pro>["getCurrentUser"]>> = null;
@@ -157,12 +158,13 @@ export default async function DashboardPage({
                 </>
               )}
             </p>
-            <p className="text-[hsl(var(--muted-foreground))]">
-              Want to cancel or update your card? Use the{" "}
-              <Link href="/account" className="underline">
-                customer portal
+            <p>
+              <Link
+                href="/account"
+                className="inline-block rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-1.5 text-xs font-medium no-underline hover:bg-[hsl(var(--muted))]"
+              >
+                {tAccount("linkLabel")}
               </Link>
-              .
             </p>
           </div>
         ) : (

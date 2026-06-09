@@ -177,6 +177,26 @@
     "popularHeading": "Popular packages",
     "popularCveCount": "{n} CVEs"
   },
+  "Account": {
+    "title": "Manage plan",
+    "subtitle": "Manage your subscription, payment method, and billing history.",
+    "currentPlan": "Current plan",
+    "statusLabel": "Status",
+    "renewsLabel": "Renews",
+    "endsLabel": "Ends",
+    "freeTier": "Free tier",
+    "freeBody": "Upgrade to Pro for up to 50 package watches plus daily email alerts.",
+    "upgradeCta": "Upgrade to Pro — $9/mo",
+    "manageHeading": "Manage subscription",
+    "manageBody": "Update your card, view invoices, or cancel — these are handled by our billing provider Polar.",
+    "openPolar": "Open billing portal",
+    "opening": "Opening…",
+    "cancelHint": "After canceling you keep Pro access until the next billing date, then drop to free.",
+    "errorTitle": "Couldn't open the billing portal",
+    "errorBody": "Please try again in a moment, or email support@vulnscope.dev.",
+    "backToDashboard": "← Back to dashboard",
+    "linkLabel": "Manage plan"
+  },
   "Pricing": {
     "title": "Pricing",
     "intro": "VulnScope is MIT open source — clone, self-host, hack on it forever. The hosted Pro tier adds the things that take a server: watchlists and daily email alerts.",
