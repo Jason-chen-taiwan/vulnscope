@@ -394,9 +394,22 @@ pipeline, and CLI lives in this repo.
 I also run a hosted Pro tier on [vulnscope.dev](https://vulnscope.dev)
 that adds:
 
-- **Watchlist** — pin packages, see new CVEs in one place
-- **Email alerts** — daily digest when a CVE hits a package you watch
+- **Watchlist** — pin up to 50 packages (any version, or "any version"),
+  with the latest 3 CVEs and per-version affected status surfaced on
+  one dashboard
+- **Email digest** — daily Resend-powered email when a new CVE lands on
+  a watched package (idempotent per UTC day; cursor advances only on
+  successful send)
+- **Manage-plan page** — in-app subscription overview (status, next
+  billing date) with one click through to Polar's hosted customer
+  portal for card/invoice/cancel actions
 - **Higher API limits** for the CLI
+
+Pro billing runs through Polar (Merchant of Record, Stripe Connect
+Express under the hood for Taiwan payouts). Webhooks are idempotent
+via a `webhook_events` audit table keyed on the Standard Webhooks
+`webhook-id` header so retries can't double-charge or re-cancel a
+user.
 
 Pro features live in a separate private repo and aren't part of this
 codebase. The $9/mo pays the hosting bill and lets me work on this on
@@ -466,14 +479,16 @@ and you're done — no other code changes needed.
 |---|---|
 | `/` | Dashboard: stats, recent KEV additions, most-vulnerable packages per ecosystem |
 | `/packages` | Browse all 15k+ tracked packages with filters |
-| `/package/{ecosystem}/{name}` | One package: all CVEs, severity, version checker |
+| `/package/{ecosystem}/{name}` | One package: all CVEs (first 100; `?all=1` for full list), severity counts, version checker (all 13 ecosystems) |
 | `/cve/{id}` | One CVE: description, affected packages, CVSS/EPSS, references |
 | `/search?q=…` | Full-text + trigram search across CVEs and packages |
 | `/api/v1/packages/{eco}/{name}/check?version=X` | JSON API for the version checker |
 | `/api/v1/vulns/{id}` | JSON envelope for a CVE bundle |
 
-Try it: `/package/Maven/org.apache.logging.log4j:log4j-core`,
-`/package/Debian/openssl`, `/package/PyPI/django?` then check `3.2.0`.
+Try it: `/package/Maven/org.apache.logging.log4j:log4j-core` then
+check `2.14.1`, `/package/Debian/openssl` then check `1.1.1n-0+deb11u3`,
+`/package/PyPI/django` then check `3.2.0`, or
+`/package/Go/golang.org%2Fx%2Fcrypto` then check a pseudo-version.
 
 ## What it doesn't do
 
@@ -827,11 +842,36 @@ total                                    20-26 s
 ### Version match & CVSS modules
 
 Version range comparison lives in `src/lib/version-match.ts` and walks the
-OSV `events[]` form (`introduced` / `fixed` / `last_affected` / `limit`)
-using `semver` for npm-shaped ecosystems and `@renovatebot/pep440` for
-PyPI. CVSS v3.x base scores are computed from the vector string in
-`src/lib/cvss.ts`. Both modules are pure functions with a `vitest` suite
-right next to them.
+OSV `events[]` form (`introduced` / `fixed` / `last_affected` / `limit`).
+The actual `cmp(a, b)` lookup is a dispatch table in `src/lib/version/`
+with one file per ecosystem — all 13 we ingest are wired up:
+
+| Ecosystem | Comparator | Backing impl |
+|---|---|---|
+| npm, crates.io | `npm.ts` | `semver` |
+| PyPI | `pypi.ts` | `@renovatebot/pep440` |
+| NuGet | `nuget.ts` | 4-part SemVer variant (custom) |
+| Maven | `maven.ts` | Port of Apache `ComparableVersion.java` |
+| Debian | `debian.ts` | Port of `dpkg --compare-versions` (verrevcmp) |
+| Alpine | `alpine.ts` | Port of apk-tools `version.c` |
+| Go | `go.ts` | `semver` + pseudo-version (`v0.0.0-TS-HASH`) parser |
+| RubyGems | `rubygems.ts` | Gem::Version port |
+| Packagist | `composer.ts` | Composer stability flags |
+| Hex | `hex.ts` | Strict SemVer 2.0 |
+| Hackage | `hackage.ts` | PVP dotted-decimal |
+| Bitnami | `bitnami.ts` | semver + distro suffix + `-rN` |
+
+Each comparator has a `__tests__/<eco>.test.ts` fixture suite (12-26
+real-package cases per ecosystem, cross-checked against the upstream
+tool — `dpkg --compare-versions`, `apk version`, etc.). 190+ tests
+total.
+
+Unknown ecosystems fall back to lexicographic order in
+`version-match.ts` so a CVE from an ecosystem we haven't wired up
+yet still renders rather than 500ing.
+
+CVSS v3.x base scores are computed from the vector string in
+`src/lib/cvss.ts`.
 
 ### Schema notes
 
@@ -862,7 +902,7 @@ right next to them.
 |---|---|
 | App | Next.js 15 (App Router) + TypeScript + Tailwind |
 | DB | PostgreSQL 16 + Drizzle ORM + `pg_trgm` + tsvector |
-| Version match | `semver` (npm-shape) + `@renovatebot/pep440` (PyPI) |
+| Version match | `semver` + `@renovatebot/pep440` + 9 hand-rolled comparators (Debian dpkg, Maven, Alpine apk, Go pseudo-versions, RubyGems, Composer, Hex, Hackage, Bitnami) |
 | Ingest | Node + `undici` + `zod`, system `unzip` for OSV bulk zips |
 | Tests | `vitest` |
 
@@ -879,6 +919,15 @@ SaaS. PRs welcome.
       ingest" above.
 - [x] CLI: `vulnscope check package.json` — done; see [`cli/`](./cli)
       (npm + pnpm lockfiles; Yarn / Python / Go on the way).
+- [x] Multi-ecosystem version comparator — all 13 ingested ecosystems
+      (npm/PyPI/Maven/Go/RubyGems/Packagist/crates.io/NuGet/Hex/
+      Hackage/Debian/Alpine/Bitnami) now have dedicated comparators
+      with fixture-based tests; see `src/lib/version/`.
+- [x] ExploitDB / Metasploit / Nuclei template mapping per CVE —
+      `exploits` table now ingested and surfaced as `exploits_count`
+      on the package bundle.
+- [x] RSS / Atom feeds (per ecosystem, per severity) — see
+      `/feed/all.xml`, `/feed/severity/kev`, `/feed/severity/high`.
 - [ ] OSV per-record-changed feed — currently we still download the full
       zip per ecosystem (zips update hourly upstream) and rely on the
       per-record `modified` to skip writes. A `firstSeen.json`-style
@@ -886,8 +935,6 @@ SaaS. PRs welcome.
 - [ ] NVD CVSS fallback — fill score gaps where OSV gives vectors only.
 - [ ] GHSA as a separate source (currently merged into OSV) to enable
       source-diff view.
-- [ ] ExploitDB / Metasploit / Nuclei template mapping per CVE.
-- [ ] RSS / Atom feeds (per ecosystem, per severity).
 - [ ] CLI Phase 2: Yarn / Bun lockfiles, Python (`requirements.txt`,
       `poetry.lock`), Go (`go.sum`).
 - [ ] Read replica + materialized views for `/packages` aggregation.
