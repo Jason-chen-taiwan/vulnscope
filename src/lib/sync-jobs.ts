@@ -140,13 +140,30 @@ export async function getLastSuccessfulRun(source: string): Promise<Date | null>
   return rows[0]?.finished_at ?? null;
 }
 
+// Short in-memory caches for the two homepage SSR calls. These were the
+// only un-cached DB queries on /[locale]/page.tsx after ac38c88 — every
+// homepage render hit sync_jobs twice. During ingest, sync_jobs is the
+// busiest write target, so even these cheap SELECTs were stacking up
+// behind row-level locks and contributing to the intermittent 503s.
+// 10s TTL keeps "ingest in flight" indicator responsive (worst case the
+// running badge appears 10s late) while removing per-pageview DB load.
+let isIngestRunningCache: { at: number; value: boolean } | null = null;
+let freshnessCache: { at: number; value: { source: string; finished_at: Date | null; status: string }[] } | null = null;
+const SYNC_JOBS_CACHE_TTL_MS = 10_000;
+
 /** True if any ingest is currently in flight (status='running'). Useful
  *  for pages that want to auto-refresh while data is moving. */
 export async function isIngestRunning(): Promise<boolean> {
+  const now = Date.now();
+  if (isIngestRunningCache && now - isIngestRunningCache.at < SYNC_JOBS_CACHE_TTL_MS) {
+    return isIngestRunningCache.value;
+  }
   const { rows } = await pool.query(
     `SELECT 1 FROM sync_jobs WHERE status='running' LIMIT 1`,
   );
-  return rows.length > 0;
+  const value = rows.length > 0;
+  isIngestRunningCache = { at: now, value };
+  return value;
 }
 
 export async function getFreshness(): Promise<{
@@ -154,11 +171,16 @@ export async function getFreshness(): Promise<{
   finished_at: Date | null;
   status: string;
 }[]> {
+  const now = Date.now();
+  if (freshnessCache && now - freshnessCache.at < SYNC_JOBS_CACHE_TTL_MS) {
+    return freshnessCache.value;
+  }
   const { rows } = await pool.query(
     `SELECT DISTINCT ON (source) source, finished_at, status
        FROM sync_jobs
        WHERE finished_at IS NOT NULL
        ORDER BY source, finished_at DESC`,
   );
+  freshnessCache = { at: now, value: rows };
   return rows;
 }
