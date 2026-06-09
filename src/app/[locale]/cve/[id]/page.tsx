@@ -30,6 +30,33 @@ function aliasExternalUrl(alias: string, source: string): string | null {
   }
 }
 
+// Literal classnames so Tailwind's JIT keeps them. Don't template these.
+const SEVERITY_BAR: Record<string, string> = {
+  CRITICAL: "border-l-red-600",
+  HIGH: "border-l-orange-600",
+  MEDIUM: "border-l-yellow-500",
+  LOW: "border-l-green-600",
+  NONE: "border-l-zinc-300",
+};
+
+const SEVERITY_TEXT: Record<string, string> = {
+  CRITICAL: "text-red-600",
+  HIGH: "text-orange-600",
+  MEDIUM: "text-yellow-600",
+  LOW: "text-green-600",
+  NONE: "text-zinc-500",
+};
+
+function splitUrl(url: string): { host: string; path: string } {
+  try {
+    const u = new URL(url);
+    const path = `${u.pathname}${u.search}${u.hash}`;
+    return { host: u.host, path: path === "/" ? "" : path };
+  } catch {
+    return { host: url, path: "" };
+  }
+}
+
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({
@@ -100,173 +127,266 @@ export default async function CvePage({
     exploits: { url: string; source: string; description: string | null }[];
   };
   const topScore = scores.find((s: { base_score: number | null }) => s.base_score !== null);
+  const sevKey = topScore?.severity ?? "NONE";
+  const barClass = SEVERITY_BAR[sevKey] ?? SEVERITY_BAR.NONE;
+  const sevTextClass = SEVERITY_TEXT[sevKey] ?? SEVERITY_TEXT.NONE;
+
+  const cardClass =
+    "rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-5";
+  const sectionTitleClass = "text-base font-semibold mb-3";
 
   return (
     <article className="space-y-6">
-      <header className="space-y-2">
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-2xl font-bold font-mono">{vuln.cve_id}</h1>
-          {topScore && <SeverityBadge severity={topScore.severity} score={topScore.base_score} />}
+      {/* Severity Hero */}
+      <section
+        className={`rounded-lg border border-[hsl(var(--border))] border-l-4 ${barClass} bg-[hsl(var(--background))] p-5`}
+      >
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1 space-y-2">
+            <h1 className="text-2xl font-bold font-mono break-all">{vuln.cve_id}</h1>
+            {vuln.summary && (
+              <p className="text-lg leading-snug text-[hsl(var(--foreground))]">{vuln.summary}</p>
+            )}
+          </div>
+          {topScore && (
+            <div className="shrink-0 sm:text-right">
+              <div className={`text-5xl font-bold font-mono leading-none ${sevTextClass}`}>
+                {topScore.base_score?.toFixed(1) ?? "—"}
+              </div>
+              <div className={`mt-1 text-xs font-bold uppercase tracking-wide ${sevTextClass}`}>
+                {topScore.severity ?? "—"}
+              </div>
+              <div className="mt-0.5 text-[10px] uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+                CVSS {topScore.version}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <KevBadge kev={vuln.kev} />
           <EpssBadge score={vuln.epss_score} percentile={vuln.epss_percentile} />
         </div>
-        {vuln.summary && <p className="text-lg">{vuln.summary}</p>}
-        <div className="text-xs text-[hsl(var(--muted-foreground))] flex flex-wrap gap-4">
-          {vuln.published_at && <span>{t("published", { date: new Date(vuln.published_at).toLocaleDateString(dateLocale) })}</span>}
-          {vuln.modified_at && <span>{t("modified", { date: new Date(vuln.modified_at).toLocaleDateString(dateLocale) })}</span>}
-          {vuln.kev_added_at && (
-            <span className="text-[hsl(15,82%,30%)] font-medium">
-              {t("addedToKev", { date: new Date(vuln.kev_added_at).toLocaleDateString(dateLocale) })}
-            </span>
-          )}
-        </div>
-        {aliases.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 text-xs pt-1">
-            <span className="text-[hsl(var(--muted-foreground))]">{t("alsoKnownAs")}</span>
-            {aliases.map((a) => {
-              const href = aliasExternalUrl(a.alias, a.source);
-              const className =
-                "font-mono rounded border border-[hsl(var(--border))] px-1.5 py-0.5";
-              return href ? (
-                <a
-                  key={a.alias}
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className={`${className} hover:bg-[hsl(var(--muted))] underline-offset-2 hover:underline`}
-                  title={a.source.toUpperCase()}
-                >
-                  {a.alias}
-                </a>
-              ) : (
-                <span key={a.alias} className={className} title={a.source.toUpperCase()}>
-                  {a.alias}
-                </span>
-              );
-            })}
-          </div>
-        )}
-      </header>
-
-      {vuln.description && (
-        <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-            {t("description")}
-          </h2>
-          <p className="whitespace-pre-wrap">{vuln.description}</p>
-        </section>
-      )}
-
-      <section>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-          {t("affectedPackages", { n: affected.length })}
-        </h2>
-        {affected.length === 0 ? (
-          <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("noPackageMapping")}</p>
-        ) : (
-          <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
-            {affected.map((a: {
-              ecosystem: string;
-              name: string;
-              ranges_json: OsvRange[];
-              versions_json: string[] | null;
-            }) => (
-              <li key={`${a.ecosystem}/${a.name}`} className="px-4 py-3 flex flex-wrap items-baseline gap-2">
-                <Link href={`/package/${a.ecosystem}/${a.name}`} className="no-underline font-medium">
-                  <span className="font-mono text-xs text-[hsl(var(--muted-foreground))]">{a.ecosystem}/</span>
-                  <span className="font-mono">{a.name}</span>
-                </Link>
-                <span className="text-sm text-[hsl(var(--muted-foreground))] font-mono">
-                  {a.ranges_json.map((r) => describeRange(r)).filter(Boolean).join("  |  ")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
 
-      {scores.length > 0 && (
-        <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-            {t("cvssScores")}
-          </h2>
-          <table className="text-sm w-full">
-            <thead className="text-xs uppercase text-[hsl(var(--muted-foreground))]">
-              <tr>
-                <th className="text-left py-1">{t("source")}</th>
-                <th className="text-left py-1">{t("version")}</th>
-                <th className="text-left py-1">{t("severityCol")}</th>
-                <th className="text-left py-1">{t("vector")}</th>
-              </tr>
-            </thead>
-            <tbody className="font-mono text-xs">
-              {scores.map((s: { source: string; version: string; severity: string | null; base_score: number | null; vector: string | null }, i: number) => (
-                <tr key={i} className="border-t border-[hsl(var(--border))]">
-                  <td className="py-1 pr-3">{s.source}</td>
-                  <td className="py-1 pr-3">CVSS {s.version}</td>
-                  <td className="py-1 pr-3">
-                    <SeverityBadge severity={s.severity} score={s.base_score} />
-                  </td>
-                  <td className="py-1 break-all">{s.vector ?? ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
+      <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+        {/* Main column */}
+        <main className="min-w-0 space-y-6">
+          {vuln.description && (
+            <section className={cardClass}>
+              <h2 className={sectionTitleClass}>{t("description")}</h2>
+              <p className="whitespace-pre-wrap leading-relaxed">{vuln.description}</p>
+            </section>
+          )}
 
-      {exploits.length > 0 && (
-        <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wide mb-2 text-[hsl(15,82%,30%)]">
-            {t("exploitsAvailable", { n: exploits.length })}
-          </h2>
-          <ul className="space-y-1 text-sm">
-            {exploits.slice(0, 25).map((e) => (
-              <li key={e.url} className="flex items-baseline gap-2">
-                <span className="text-[10px] uppercase font-mono w-20 shrink-0 text-[hsl(var(--muted-foreground))]">
-                  {e.source}
-                </span>
-                <a
-                  href={e.url}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="break-all"
-                >
-                  {e.url}
-                </a>
-              </li>
-            ))}
-            {exploits.length > 25 && (
-              <li className="text-xs text-[hsl(var(--muted-foreground))]">
-                {t("moreExploits", { n: exploits.length - 25 })}
-              </li>
+          <section className={cardClass}>
+            <h2 className={sectionTitleClass}>{t("affectedPackages", { n: affected.length })}</h2>
+            {affected.length === 0 ? (
+              <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("noPackageMapping")}</p>
+            ) : (
+              <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
+                {affected.map((a: {
+                  ecosystem: string;
+                  name: string;
+                  ranges_json: OsvRange[];
+                  versions_json: string[] | null;
+                }) => (
+                  <li
+                    key={`${a.ecosystem}/${a.name}`}
+                    className="flex flex-wrap items-baseline gap-2 px-4 py-3 hover:bg-[hsl(var(--muted))]"
+                  >
+                    <Link href={`/package/${a.ecosystem}/${a.name}`} className="no-underline font-medium">
+                      <span className="font-mono text-xs text-[hsl(var(--muted-foreground))]">{a.ecosystem}/</span>
+                      <span className="font-mono">{a.name}</span>
+                    </Link>
+                    <span className="text-sm text-[hsl(var(--muted-foreground))] font-mono">
+                      {a.ranges_json.map((r) => describeRange(r)).filter(Boolean).join("  |  ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             )}
-          </ul>
-        </section>
-      )}
+          </section>
 
-      {refs.length > 0 && (
-        <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-2">
-            {t("references", { n: refs.length })}
-          </h2>
-          <ul className="space-y-1 text-sm">
-            {refs.slice(0, 50).map((r: { url: string; type: string | null }) => (
-              <li key={r.url} className="flex items-baseline gap-2">
-                <span className="text-[10px] uppercase font-mono w-16 shrink-0 text-[hsl(var(--muted-foreground))]">
-                  {r.type ?? "WEB"}
-                </span>
-                <a href={r.url} target="_blank" rel="noreferrer noopener" className="break-all">
-                  {r.url}
-                </a>
-              </li>
-            ))}
-            {refs.length > 50 && (
-              <li className="text-xs text-[hsl(var(--muted-foreground))]">{t("moreRefs", { n: refs.length - 50 })}</li>
-            )}
-          </ul>
-        </section>
-      )}
+          {scores.length > 0 && (
+            <section className={cardClass}>
+              <h2 className={sectionTitleClass}>{t("cvssScores")}</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+                    <tr>
+                      <th className="text-left py-2 pr-3 font-medium">{t("source")}</th>
+                      <th className="text-left py-2 pr-3 font-medium">{t("version")}</th>
+                      <th className="text-left py-2 pr-3 font-medium">{t("severityCol")}</th>
+                      <th className="text-left py-2 font-medium">{t("vector")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scores.map((s: { source: string; version: string; severity: string | null; base_score: number | null; vector: string | null }, i: number) => (
+                      <tr key={i} className="border-t border-[hsl(var(--border))]">
+                        <td className="py-2 pr-3 font-mono text-xs">{s.source}</td>
+                        <td className="py-2 pr-3 font-mono text-xs whitespace-nowrap">CVSS {s.version}</td>
+                        <td className="py-2 pr-3">
+                          <SeverityBadge severity={s.severity} score={s.base_score} />
+                        </td>
+                        <td className="py-2 font-mono text-xs break-all text-[hsl(var(--muted-foreground))]">
+                          {s.vector ?? ""}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {exploits.length > 0 && (
+            <section className={`${cardClass} border-l-4 border-l-red-600`}>
+              <h2 className={`${sectionTitleClass} text-red-600`}>
+                {t("exploitsAvailable", { n: exploits.length })}
+              </h2>
+              <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
+                {exploits.slice(0, 25).map((e) => {
+                  const { host, path } = splitUrl(e.url);
+                  return (
+                    <li key={e.url} className="hover:bg-[hsl(var(--muted))]">
+                      <a
+                        href={e.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="flex items-baseline gap-3 px-4 py-2 no-underline"
+                        title={e.url}
+                      >
+                        <span className="w-20 shrink-0 font-mono text-[10px] uppercase text-[hsl(var(--muted-foreground))]">
+                          {e.source}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm">
+                          <span className="font-medium">{host}</span>
+                          {path && <span className="text-[hsl(var(--muted-foreground))]">{path}</span>}
+                        </span>
+                      </a>
+                    </li>
+                  );
+                })}
+                {exploits.length > 25 && (
+                  <li className="px-4 py-2 text-xs text-[hsl(var(--muted-foreground))]">
+                    {t("moreExploits", { n: exploits.length - 25 })}
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
+
+          {refs.length > 0 && (
+            <section className={cardClass}>
+              <h2 className={sectionTitleClass}>{t("references", { n: refs.length })}</h2>
+              <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
+                {refs.slice(0, 50).map((r: { url: string; type: string | null }) => {
+                  const { host, path } = splitUrl(r.url);
+                  return (
+                    <li key={r.url} className="hover:bg-[hsl(var(--muted))]">
+                      <a
+                        href={r.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="flex items-baseline gap-3 px-4 py-2 no-underline"
+                        title={r.url}
+                      >
+                        <span className="w-16 shrink-0 font-mono text-[10px] uppercase text-[hsl(var(--muted-foreground))]">
+                          {r.type ?? "WEB"}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm">
+                          <span className="font-medium">{host}</span>
+                          {path && <span className="text-[hsl(var(--muted-foreground))]">{path}</span>}
+                        </span>
+                      </a>
+                    </li>
+                  );
+                })}
+                {refs.length > 50 && (
+                  <li className="px-4 py-2 text-xs text-[hsl(var(--muted-foreground))]">
+                    {t("moreRefs", { n: refs.length - 50 })}
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
+        </main>
+
+        {/* Sidebar */}
+        <aside className="space-y-6 lg:sticky lg:top-6 lg:self-start">
+          <section className={cardClass}>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-3">
+              {t("metadata")}
+            </h2>
+            <dl className="space-y-2 text-sm">
+              {vuln.published_at && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-[hsl(var(--muted-foreground))]">{t("publishedLabel")}</dt>
+                  <dd className="font-mono text-xs">
+                    {new Date(vuln.published_at).toLocaleDateString(dateLocale)}
+                  </dd>
+                </div>
+              )}
+              {vuln.modified_at && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-[hsl(var(--muted-foreground))]">{t("modifiedLabel")}</dt>
+                  <dd className="font-mono text-xs">
+                    {new Date(vuln.modified_at).toLocaleDateString(dateLocale)}
+                  </dd>
+                </div>
+              )}
+              {vuln.kev_added_at && (
+                <div className="flex justify-between gap-3">
+                  <dt className="font-medium text-[hsl(15,82%,30%)]">{t("kevAddedLabel")}</dt>
+                  <dd className="font-mono text-xs text-[hsl(15,82%,30%)]">
+                    {new Date(vuln.kev_added_at).toLocaleDateString(dateLocale)}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </section>
+
+          {aliases.length > 0 && (
+            <section className={cardClass}>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))] mb-3">
+                {t("alsoKnownAs")}
+              </h2>
+              <ul className="flex flex-col gap-1.5">
+                {aliases.map((a) => {
+                  const href = aliasExternalUrl(a.alias, a.source);
+                  const inner = (
+                    <span className="flex items-baseline justify-between gap-2">
+                      <span className="font-mono text-sm break-all">{a.alias}</span>
+                      <span className="shrink-0 text-[10px] uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+                        {a.source}
+                      </span>
+                    </span>
+                  );
+                  return href ? (
+                    <li key={a.alias}>
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="block rounded border border-[hsl(var(--border))] px-2 py-1 no-underline hover:bg-[hsl(var(--muted))]"
+                      >
+                        {inner}
+                      </a>
+                    </li>
+                  ) : (
+                    <li
+                      key={a.alias}
+                      className="rounded border border-[hsl(var(--border))] px-2 py-1"
+                    >
+                      {inner}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+        </aside>
+      </div>
     </article>
   );
 }

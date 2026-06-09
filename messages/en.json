@@ -75,7 +75,11 @@
     "moreRefs": "… {n} more",
     "alsoKnownAs": "Also known as:",
     "exploitsAvailable": "Public exploits ({n})",
-    "moreExploits": "+{n} more"
+    "moreExploits": "+{n} more",
+    "metadata": "Metadata",
+    "publishedLabel": "Published",
+    "modifiedLabel": "Modified",
+    "kevAddedLabel": "Added to KEV"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {No CVEs} =1 {1 total CVE} other {# total CVEs}}",

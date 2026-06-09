@@ -75,7 +75,11 @@
     "moreRefs": "… 另有 {n} 筆",
     "alsoKnownAs": "也稱為:",
     "exploitsAvailable": "公開可利用程式 ({n})",
-    "moreExploits": "+{n} 個更多"
+    "moreExploits": "+{n} 個更多",
+    "metadata": "資訊",
+    "publishedLabel": "發布日",
+    "modifiedLabel": "修改日",
+    "kevAddedLabel": "加入 KEV"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {沒有 CVE} other {共 # 筆 CVE}}",
