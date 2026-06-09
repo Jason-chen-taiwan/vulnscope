@@ -105,7 +105,13 @@ export async function runEpssIngest(
       if (cols.length < 3) continue;
       batch.push([cols[0], cols[1], cols[2]]);
       processed++;
-      if (batch.length >= BATCH) await flush();
+      if (batch.length >= BATCH) {
+        await flush();
+        // Heartbeat so the orchestrator's 5-min idle-timeout
+        // doesn't reap a healthy ingest. JobHandle.progress() is
+        // coalesced to ≤1 UPDATE/sec internally; cheap to call.
+        job.progress({ seen: processed, changed: updated });
+      }
     }
     if (!skipRest) {
       await flush();

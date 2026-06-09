@@ -85,6 +85,11 @@ export async function runNvdIngest(
     for (const { cve_id } of rows) {
       if (opts?.signal?.aborted) throw new Error("aborted: nvd");
       seen += 1;
+      // Heartbeat per iteration. Each cycle is dominated by HTTP +
+      // a 6-second rate-limit sleep (REQUEST_DELAY_MS), so progress()
+      // gets called every ~7 s — well inside the orchestrator's 5 min
+      // idle timeout. JobHandle coalesces to ≤1 UPDATE/sec.
+      job.progress({ seen, changed });
       try {
         const url = `${NVD_URL}?cveId=${encodeURIComponent(cve_id)}`;
         const res = await fetch(url, {
