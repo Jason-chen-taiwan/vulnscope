@@ -17,8 +17,17 @@ interface CheckResponse {
       summary: string | null;
     }>;
     recommended_version: string | null;
-  };
+  } | null;
+  errors?: Array<{ code: string; message: string }>;
 }
+
+// The /check endpoint only knows how to compare semver (npm) and
+// PEP 440 (PyPI). Other ecosystems have their own version ordering
+// (Debian's dpkg --compare, Maven's spec, Alpine's apk, Go modules
+// pseudo-versions) — until version-match.ts grows comparators for
+// those, the API returns 400 UNSUPPORTED_ECOSYSTEM. Hide the
+// checker UI in that case so users don't waste a click.
+const SUPPORTED_ECOSYSTEMS = new Set(["npm", "PyPI"]);
 
 export function VersionChecker({
   ecosystem,
@@ -37,17 +46,34 @@ export function VersionChecker({
     e.preventDefault();
     if (!v.trim()) return;
     setError(null);
+    setResult(null);
     start(async () => {
       try {
         const r = await fetch(
           `/api/v1/packages/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}/check?version=${encodeURIComponent(v.trim())}`,
         );
         const json = (await r.json()) as CheckResponse;
+        if (!r.ok || !json.data) {
+          // Surface the API error envelope so the user gets feedback
+          // instead of a silent no-op (e.g. 400 UNSUPPORTED_ECOSYSTEM
+          // on Debian/Maven/Go, 404 NOT_FOUND for unknown packages).
+          const msg = json.errors?.[0]?.message ?? `HTTP ${r.status}`;
+          setError(msg);
+          return;
+        }
         setResult(json.data);
       } catch (err) {
-        setError(String(err));
+        setError(err instanceof Error ? err.message : String(err));
       }
     });
+  }
+
+  // Hide entirely for ecosystems we can't compare versions in.
+  // The package detail page still shows the CVE list — the
+  // checker just isn't useful for, say, "is openssl 1.1.1 affected"
+  // when we don't have a Debian version comparator wired up.
+  if (!SUPPORTED_ECOSYSTEMS.has(ecosystem)) {
+    return null;
   }
 
   const placeholder =

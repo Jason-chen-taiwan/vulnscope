@@ -10,7 +10,7 @@
  * Variants mirror the actual page layouts so the swap from skeleton
  * → real content doesn't jump the viewport.
  */
-type Variant = "default" | "cve" | "search" | "packages";
+type Variant = "default" | "cve" | "search" | "packages" | "package";
 
 const SHIMMER =
   "bg-[hsl(var(--muted))] animate-pulse rounded";
@@ -136,6 +136,43 @@ function SearchSkeleton() {
   );
 }
 
+function PackageSkeleton() {
+  return (
+    <div className="space-y-6">
+      <header className="space-y-2">
+        <Bar className="h-7 w-72 max-w-full" />
+        <div className="flex flex-wrap gap-3">
+          <Bar className="h-4 w-24" />
+          <Bar className="h-4 w-16" />
+          <Bar className="h-4 w-16" />
+        </div>
+      </header>
+      <Card>
+        <Bar className="h-5 w-36 mb-3" />
+        <div className="flex gap-2">
+          <Bar className="h-8 flex-1" />
+          <Bar className="h-8 w-16" />
+        </div>
+      </Card>
+      <div>
+        <Bar className="h-3 w-24 mb-3" />
+        <ul className="divide-y divide-[hsl(var(--border))] rounded-lg border border-[hsl(var(--border))]">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <li key={i} className="px-4 py-3 space-y-2">
+              <div className="flex items-baseline gap-2">
+                <Bar className="h-5 w-16 shrink-0" />
+                <Bar className="h-4 w-32 shrink-0" />
+                <Bar className="h-4 flex-1" />
+              </div>
+              <Bar className="h-3 w-3/4" />
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function PackagesSkeleton() {
   return (
     <div className="space-y-6">
@@ -175,6 +212,7 @@ export function PageSkeleton({ variant = "default" }: { variant?: Variant }) {
       {variant === "cve" && <CveSkeleton />}
       {variant === "search" && <SearchSkeleton />}
       {variant === "packages" && <PackagesSkeleton />}
+      {variant === "package" && <PackageSkeleton />}
       {variant === "default" && <DefaultSkeleton />}
     </div>
   );
