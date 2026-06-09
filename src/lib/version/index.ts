@@ -20,6 +20,8 @@ import type { Comparator } from "./types";
 import { npmComparator } from "./npm";
 import { pypiComparator } from "./pypi";
 import { nugetComparator } from "./nuget";
+import { debianComparator } from "./debian";
+import { mavenComparator } from "./maven";
 
 // crates.io shares the SemVer comparator — Rust's spec defers to
 // SemVer 2.0 with only cosmetic restrictions (no leading zeros) that
@@ -29,6 +31,8 @@ const COMPARATORS: Record<string, Comparator> = {
   "crates.io": npmComparator,
   PyPI: pypiComparator,
   NuGet: nugetComparator,
+  Debian: debianComparator,
+  Maven: mavenComparator,
 };
 
 export function comparatorFor(ecosystem: string): Comparator | null {
