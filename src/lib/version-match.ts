@@ -1,8 +1,13 @@
-import semver from "semver";
-import * as pep440 from "@renovatebot/pep440";
 import type { OsvRange, OsvEvent } from "./osv";
+import { comparatorFor } from "./version";
+import { lexicographic } from "./version/types";
 
-export type Ecosystem = "npm" | "PyPI";
+/**
+ * Ecosystem name as it appears on OSV records / our `affected.ecosystem`
+ * column. We accept any string and dispatch via comparatorFor(); unknown
+ * ecosystems fall through to lexicographic order.
+ */
+export type Ecosystem = string;
 
 export interface MatchResult {
   affected: boolean;
@@ -11,41 +16,13 @@ export interface MatchResult {
 
 const ZERO_PLACEHOLDER = "0";
 
-/** Coerce a version string to a parseable canonical form for the given ecosystem.
- *  Returns null if the string is unparseable. */
-function canonicalize(v: string, eco: Ecosystem): string | null {
-  if (v === ZERO_PLACEHOLDER) return v;
-  if (eco === "npm") {
-    // semver.valid("1.2.3-rc.1") => string; semver.coerce relaxes "v1.2" -> "1.2.0"
-    const valid = semver.valid(v);
-    if (valid) return valid;
-    const coerced = semver.coerce(v);
-    return coerced ? coerced.version : null;
-  }
-  // PyPI / PEP 440
-  return pep440.valid(v) ? v : null;
-}
-
 function cmp(a: string, b: string, eco: Ecosystem): number {
   if (a === b) return 0;
   if (a === ZERO_PLACEHOLDER) return -1;
   if (b === ZERO_PLACEHOLDER) return 1;
-
-  if (eco === "npm") {
-    const av = canonicalize(a, eco);
-    const bv = canonicalize(b, eco);
-    if (!av || !bv) {
-      // Fall back to lexicographic: better than throwing for malformed OSV data.
-      return a < b ? -1 : a > b ? 1 : 0;
-    }
-    return semver.compare(av, bv);
-  }
-  // PyPI
-  if (!pep440.valid(a) || !pep440.valid(b)) {
-    return a < b ? -1 : a > b ? 1 : 0;
-  }
-  // pep440.compare returns -1/0/1
-  return pep440.compare(a, b);
+  const c = comparatorFor(eco);
+  if (!c) return lexicographic(a, b);
+  return c.cmp(a, b);
 }
 
 interface SortableEvent {
