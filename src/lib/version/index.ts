@@ -22,6 +22,13 @@ import { pypiComparator } from "./pypi";
 import { nugetComparator } from "./nuget";
 import { debianComparator } from "./debian";
 import { mavenComparator } from "./maven";
+import { rubygemsComparator } from "./rubygems";
+import { composerComparator } from "./composer";
+import { hexComparator } from "./hex";
+import { hackageComparator } from "./hackage";
+import { bitnamiComparator } from "./bitnami";
+import { goComparator } from "./go";
+import { alpineComparator } from "./alpine";
 
 // crates.io shares the SemVer comparator — Rust's spec defers to
 // SemVer 2.0 with only cosmetic restrictions (no leading zeros) that
@@ -33,6 +40,13 @@ const COMPARATORS: Record<string, Comparator> = {
   NuGet: nugetComparator,
   Debian: debianComparator,
   Maven: mavenComparator,
+  RubyGems: rubygemsComparator,
+  Packagist: composerComparator,
+  Hex: hexComparator,
+  Hackage: hackageComparator,
+  Bitnami: bitnamiComparator,
+  Go: goComparator,
+  Alpine: alpineComparator,
 };
 
 export function comparatorFor(ecosystem: string): Comparator | null {
