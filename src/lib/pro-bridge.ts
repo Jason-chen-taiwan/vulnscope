@@ -41,6 +41,7 @@ import {
   type WatchlistRow,
   type WatchlistDisplayRow,
 } from "@pro/lib/watchlist";
+import { runDigest } from "@pro/alerts/run-digest";
 
 const PRO_ENABLED = process.env.PRO_ENABLED === "1";
 
@@ -58,6 +59,7 @@ export type ProModule = {
   removeWatch: typeof removeWatch;
   FREE_WATCHLIST_LIMIT: typeof FREE_WATCHLIST_LIMIT;
   PRO_WATCHLIST_LIMIT: typeof PRO_WATCHLIST_LIMIT;
+  runDigest: typeof runDigest;
 };
 
 const proModule: ProModule = {
@@ -74,6 +76,7 @@ const proModule: ProModule = {
   removeWatch,
   FREE_WATCHLIST_LIMIT,
   PRO_WATCHLIST_LIMIT,
+  runDigest,
 };
 
 /**
