@@ -1,5 +1,6 @@
 import "server-only";
 import { runFullRefresh } from "./ingest/orchestrator";
+import { notifyIndexNowRecent } from "./indexnow";
 
 // Lazy pool accessor avoids a circular import when this module is loaded
 // from db/client via a boot side-effect.
@@ -261,4 +262,15 @@ export async function tick(opts?: { manual?: boolean }): Promise<void> {
     watchdog = null;
     globalThis.__vulnscope_refresh_in_flight = false;
   }
+
+  // Ping IndexNow with the URLs that moved this refresh. Fire-and-forget:
+  // an IndexNow failure must not affect the refresh's success status (the
+  // sync_jobs row has already been finalised above). Goes out even if some
+  // sources failed — partial new data still benefits from faster indexing.
+  notifyIndexNowRecent()
+    .then((r) => {
+      if (r.ok) console.log(`[scheduler] IndexNow: pinged ${r.submitted} URLs`);
+      else console.log(`[scheduler] IndexNow: skipped (${r.reason})`);
+    })
+    .catch((e) => console.error("[scheduler] IndexNow notify failed:", e));
 }
