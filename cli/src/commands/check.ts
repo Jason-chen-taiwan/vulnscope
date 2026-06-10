@@ -1,10 +1,11 @@
 import pc from "picocolors";
 import { loadLockfile } from "../lockfiles/detect.js";
 import { postCheckBatch, ApiError, type VersionCheckResult } from "../api.js";
-import { resolveApiUrl } from "../config.js";
+import { resolveApiUrl, isOfficialHost } from "../config.js";
 import { buildSummary, renderSummary } from "../format/summary.js";
 import { renderTable } from "../format/table.js";
 import { renderJson } from "../format/json.js";
+import { shouldShowPromo, markPromoShown } from "../upsell.js";
 
 export interface CheckArgs {
   path?: string;
@@ -109,11 +110,65 @@ export async function runCheck(args: CheckArgs, io: IO = defaultIO): Promise<Exi
           ),
         );
       }
+      // Attribution links to the canonical CVE detail page on the
+      // hosted instance. ?ref=cli lets us attribute traffic in
+      // Plausible without dropping a cookie. Suppressed when the user
+      // pointed --api at their own self-hosted instance (the link
+      // wouldn't help them) or when --quiet.
+      if (!args.quiet && isOfficialHost(apiUrl) && summary.total_cves > 0) {
+        const uniqueCves = collectUniqueCves(filtered);
+        if (uniqueCves.length > 0) {
+          io.out("");
+          io.out(dim(color, "Read more:"));
+          for (const id of uniqueCves.slice(0, 5)) {
+            io.out(
+              dim(color, `  • ${id} → ${apiUrl}/cve/${id}?ref=cli`),
+            );
+          }
+          if (uniqueCves.length > 5) {
+            io.out(dim(color, `  • ... ${uniqueCves.length - 5} more`));
+          }
+        }
+        // Pro upsell footer: shown at most once per 7 days per
+        // machine. The premise is "you already ran vulnscope and
+        // found stuff — would you like to be told *before* the next
+        // one lands?". Soft sell with the free tier mentioned so it
+        // doesn't read as paywall pressure.
+        if (shouldShowPromo()) {
+          io.out("");
+          io.out(
+            dim(
+              color,
+              `Get daily email alerts when new CVEs land — ${apiUrl}/pricing?ref=cli-footer`,
+            ),
+          );
+          io.out(
+            dim(color, "(Free for your first 5 packages. VULNSCOPE_NO_PROMO=1 silences this.)"),
+          );
+          markPromoShown();
+        }
+      }
     }
   }
 
   if (summary.total_cves === 0) return 0;
   return args.exitZero ? 0 : 1;
+}
+
+function collectUniqueCves(results: VersionCheckResult[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  // Preserve table order (already severity-sorted by the time we
+  // arrive here), which is also the order most useful to the user.
+  for (const r of results) {
+    if (!r.is_vulnerable) continue;
+    for (const c of r.affected_by) {
+      if (seen.has(c.cve_id)) continue;
+      seen.add(c.cve_id);
+      ordered.push(c.cve_id);
+    }
+  }
+  return ordered;
 }
 
 function filterResults(
