@@ -218,7 +218,7 @@
       "price": "$0",
       "tagline": "Use our box, no ads.",
       "f1": "Web UI on vulnscope.dev",
-      "f2": "Watch up to 3 packages (sign-in required)",
+      "f2": "Watch up to 5 packages (sign-in required)",
       "f3": "Pin a specific version, see CVEs that affect it",
       "f4": "CLI hits our public API (rate-limited)",
       "f5": "RSS feeds",
@@ -228,7 +228,7 @@
       "name": "Pro",
       "price": "$9/mo",
       "tagline": "Stop checking. We email you.",
-      "f1": "Watch up to 50 packages (vs 3 on free)",
+      "f1": "Watch up to 50 packages (vs 5 on free)",
       "f2": "Daily email digest of new CVEs",
       "f3": "KEV + EPSS rising alerts",
       "f4": "10× higher CLI API limit",
@@ -245,6 +245,16 @@
       "signinHint": "Sign in with GitHub or Google to continue.",
       "generic": "Something went wrong"
     }
+  },
+  "WatchlistCta": {
+    "addLabel": "+ Watch {name}",
+    "adding": "Adding…",
+    "added": "✓ Added to watchlist",
+    "upgradeLabel": "Upgrade for more →",
+    "cardHeadline": "Get email alerts for new {name} CVEs",
+    "cardBody": "We'll email you when a new CVE lands on {name}. Free for your first 5 packages, no card required.",
+    "limitBody": "You've used your 5 free watchlist slots. Upgrade to Pro ($9/mo) to track up to 50 packages.",
+    "freeHint": "Free for your first 5 packages. No card required."
   },
   "Header": {
     "dashboard": "Dashboard",

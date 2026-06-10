@@ -8,6 +8,7 @@ import { VersionChecker } from "@/components/VersionChecker";
 import { describeRange } from "@/lib/version-match";
 import { normalizePypiName } from "@/lib/osv";
 import { summarize } from "@/lib/summary";
+import { AddToWatchlistCTA } from "@pro/components/AddToWatchlistCTA";
 
 export const dynamic = "force-dynamic";
 
@@ -88,22 +89,33 @@ export default async function PackagePage({
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <h1 className="text-2xl font-bold">
-          <span className="text-sm font-mono font-normal text-[hsl(var(--muted-foreground))]">
-            pkg:{bundle.package.ecosystem}/
-          </span>
-          <span className="font-mono">{bundle.package.name}</span>
-        </h1>
-        <div className="flex flex-wrap gap-3 text-sm">
-          <span>{t("totalCve", { n: totalCves })}</span>
-          {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((s) => (
-            counts[s] > 0 ? (
-              <span key={s} className="flex items-center gap-1">
-                <SeverityBadge severity={s} />
-                <span>{counts[s]}</span>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2 min-w-0">
+            <h1 className="text-2xl font-bold">
+              <span className="text-sm font-mono font-normal text-[hsl(var(--muted-foreground))]">
+                pkg:{bundle.package.ecosystem}/
               </span>
-            ) : null
-          ))}
+              <span className="font-mono">{bundle.package.name}</span>
+            </h1>
+            <div className="flex flex-wrap gap-3 text-sm">
+              <span>{t("totalCve", { n: totalCves })}</span>
+              {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((s) => (
+                counts[s] > 0 ? (
+                  <span key={s} className="flex items-center gap-1">
+                    <SeverityBadge severity={s} />
+                    <span>{counts[s]}</span>
+                  </span>
+                ) : null
+              ))}
+            </div>
+          </div>
+          <div className="shrink-0 w-full sm:w-72">
+            <AddToWatchlistCTA
+              ecosystem={bundle.package.ecosystem}
+              name={bundle.package.name}
+              variant="card"
+            />
+          </div>
         </div>
       </header>
 

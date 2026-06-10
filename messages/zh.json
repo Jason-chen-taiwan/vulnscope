@@ -218,7 +218,7 @@
       "price": "$0",
       "tagline": "用我們的伺服器，無廣告。",
       "f1": "vulnscope.dev 網頁介面",
-      "f2": "可追蹤最多 3 個套件（需登入）",
+      "f2": "可追蹤最多 5 個套件（需登入）",
       "f3": "可釘選特定版本，查看真正影響該版本的 CVE",
       "f4": "CLI 連到公開 API（有流量限制）",
       "f5": "RSS 訂閱",
@@ -228,7 +228,7 @@
       "name": "Pro",
       "price": "$9/月",
       "tagline": "別再人工檢查，我們寄信告訴你。",
-      "f1": "可追蹤最多 50 個套件（免費版為 3 個）",
+      "f1": "可追蹤最多 50 個套件（免費版為 5 個）",
       "f2": "每日新 CVE 摘要 email",
       "f3": "KEV 收錄與 EPSS 飆升即時通知",
       "f4": "CLI API 限額提升 10 倍",
@@ -245,6 +245,16 @@
       "signinHint": "請以 GitHub 或 Google 登入後再繼續。",
       "generic": "發生錯誤"
     }
+  },
+  "WatchlistCta": {
+    "addLabel": "+ 追蹤 {name}",
+    "adding": "加入中…",
+    "added": "✓ 已加入追蹤",
+    "upgradeLabel": "升級以追蹤更多 →",
+    "cardHeadline": "為 {name} 設定 CVE 通知",
+    "cardBody": "當 {name} 有新的 CVE 出現，我們會寄信通知你。前 5 個套件免費,免綁卡。",
+    "limitBody": "你已用滿 5 個免費追蹤額度。升級 Pro($9/月)可追蹤最多 50 個套件。",
+    "freeHint": "前 5 個套件免費,免綁卡。"
   },
   "Header": {
     "dashboard": "Dashboard",

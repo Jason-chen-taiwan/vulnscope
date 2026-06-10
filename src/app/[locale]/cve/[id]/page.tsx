@@ -8,6 +8,7 @@ import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
 import { describeRange } from "@/lib/version-match";
 import type { OsvRange } from "@/lib/osv";
+import { AddToWatchlistCTA } from "@pro/components/AddToWatchlistCTA";
 
 /**
  * Best-effort external URL for an advisory alias. We only link to
@@ -241,15 +242,16 @@ export default async function CvePage({
                 }) => (
                   <li
                     key={`${a.ecosystem}/${a.name}`}
-                    className="flex flex-wrap items-baseline gap-2 px-4 py-3 hover:bg-[hsl(var(--muted))]"
+                    className="flex flex-wrap items-center gap-2 px-4 py-3 hover:bg-[hsl(var(--muted))]"
                   >
                     <Link href={`/package/${a.ecosystem}/${a.name}`} className="no-underline font-medium">
                       <span className="font-mono text-xs text-[hsl(var(--muted-foreground))]">{a.ecosystem}/</span>
                       <span className="font-mono">{a.name}</span>
                     </Link>
-                    <span className="text-sm text-[hsl(var(--muted-foreground))] font-mono">
+                    <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] font-mono">
                       {a.ranges_json.map((r) => describeRange(r)).filter(Boolean).join("  |  ")}
                     </span>
+                    <AddToWatchlistCTA ecosystem={a.ecosystem} name={a.name} variant="inline" />
                   </li>
                 ))}
               </ul>

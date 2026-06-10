@@ -4,6 +4,7 @@ import { proAuth } from "@/lib/pro-bridge";
 import { getTopPackages } from "@/lib/queries";
 import { Link } from "@/i18n/navigation";
 import { WatchlistPanel } from "@/components/dashboard/WatchlistPanel";
+import { WatchlistAutoAdd } from "@/components/dashboard/WatchlistAutoAdd";
 import type {
   ClientWatchlistRow,
   PopularPackage,
@@ -90,7 +91,7 @@ export default async function DashboardPage({
   } catch (e) {
     console.error("[dashboard] watchlist fetch failed:", e);
   }
-  const freeLimit = pro?.FREE_WATCHLIST_LIMIT ?? 3;
+  const freeLimit = pro?.FREE_WATCHLIST_LIMIT ?? 5;
   const proLimit = pro?.PRO_WATCHLIST_LIMIT ?? 50;
 
   // Popular suggestions for the empty state. Pull a small slice from
@@ -131,6 +132,8 @@ export default async function DashboardPage({
           </p>
         </div>
       )}
+
+      <WatchlistAutoAdd />
 
       <header className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>

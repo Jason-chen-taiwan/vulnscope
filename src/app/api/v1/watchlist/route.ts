@@ -4,8 +4,8 @@
  * POST /api/v1/watchlist — add a package (idempotent on duplicate)
  *
  * Both require a signed-in user (free OR pro). POST enforces the
- * 3-item free-tier limit before insert; returns 402
- * `free_limit_reached` so the UI can show an inline upsell.
+ * free-tier limit before insert; returns 402 `free_limit_reached`
+ * so the UI can show an inline upsell.
  *
  * Returns 503 when Pro is disabled (self-host build / PRO_ENABLED=0)
  * so the UI can degrade gracefully rather than show 500s.

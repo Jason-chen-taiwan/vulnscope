@@ -13,11 +13,22 @@ export const metadata = {
 
 export default async function SignInPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ locale: string }>;
+  searchParams: Promise<{ callbackURL?: string }>;
 }) {
   const { locale } = await params;
+  const { callbackURL } = await searchParams;
   setRequestLocale(locale);
+
+  // Defence against open-redirect: only honor same-origin paths.
+  // OAuth providers will reject absolute foreign URLs anyway, but
+  // catching it here keeps the post-sign-in landing predictable.
+  const safeCallback =
+    callbackURL && callbackURL.startsWith("/") && !callbackURL.startsWith("//")
+      ? callbackURL
+      : undefined;
 
   return (
     <div className="max-w-md mx-auto py-12 space-y-8">
@@ -28,7 +39,7 @@ export default async function SignInPage({
         </p>
       </header>
 
-      <SignInPanel />
+      <SignInPanel callbackURL={safeCallback} />
 
       <p className="text-xs text-center text-[hsl(var(--muted-foreground))]">
         New here? Signing in with GitHub or Google creates your account

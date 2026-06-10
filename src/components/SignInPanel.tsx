@@ -21,6 +21,8 @@ const SignInButtons = dynamic(
   },
 );
 
-export function SignInPanel() {
-  return <SignInButtons />;
+export function SignInPanel({ callbackURL }: { callbackURL?: string }) {
+  // Don't spread `callbackURL={undefined}` — that would override
+  // SignInButtons' default and send users to undefined instead of /pricing.
+  return callbackURL ? <SignInButtons callbackURL={callbackURL} /> : <SignInButtons />;
 }
