@@ -79,7 +79,21 @@
     "metadata": "Metadata",
     "publishedLabel": "Published",
     "modifiedLabel": "Modified",
-    "kevAddedLabel": "Added to KEV"
+    "kevAddedLabel": "Added to KEV",
+    "whatIsTitle": "What is {id}?",
+    "whatIsNoSummary": "{id} is a CVE record tracked in OSV and other vulnerability databases. No summary was published for this entry.",
+    "howToFixTitle": "How to fix {id}",
+    "howToFixIntro": "To remediate {id}, upgrade the affected package to a fixed version below.",
+    "howToFixNoFix": "No fixed version has been published yet. Mitigate by removing the affected package or applying upstream guidance from the references below.",
+    "howToFixNoMapping": "No package mapping is available — consult the references below for vendor-specific guidance.",
+    "fixUpgradeTo": "upgrade to {version} or later",
+    "fixNoneListed": "no fix listed",
+    "isExploitedTitle": "Is {id} being exploited?",
+    "isExploitedKev": "Yes — {id} is on the CISA Known Exploited Vulnerabilities (KEV) catalog. Patch immediately.",
+    "isExploitedEpssHigh": "Likely — EPSS is {percent}%, placing {id} in the top tier of vulnerabilities by exploitation probability. Prioritise patching.",
+    "isExploitedEpssMed": "Moderate — EPSS is {percent}%. Track this CVE but it's not at the top of the prioritisation list.",
+    "isExploitedEpssLow": "Low — EPSS is {percent}%, meaning exploitation activity has not been observed at scale.",
+    "isExploitedUnknown": "No exploitation signal available. Neither CISA KEV nor a current EPSS score has been published for {id}."
   },
   "Package": {
     "showAll": "Show all {n} CVEs",

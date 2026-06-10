@@ -228,6 +228,91 @@ export default async function CvePage({
             </section>
           )}
 
+          {/* SEO Q&A sections. Renders identical info to the structured
+              data above, but as plain HTML so featured-snippet extractors
+              (Google AI Overview, Perplexity, Bing answer cards) have a
+              direct H2-question → A pattern to grab. Order intentional:
+              "What is" → "How to fix" → "Is exploited" matches the most
+              common long-tail search intents for CVE pages. */}
+          {!vuln.description && vuln.summary === null && (
+            <section className={cardClass}>
+              <h2 className={sectionTitleClass}>{t("whatIsTitle", { id: cveId })}</h2>
+              <p className="leading-relaxed">{t("whatIsNoSummary", { id: cveId })}</p>
+            </section>
+          )}
+
+          <section className={cardClass}>
+            <h2 className={sectionTitleClass}>{t("howToFixTitle", { id: cveId })}</h2>
+            {affected.length === 0 ? (
+              <p className="leading-relaxed">{t("howToFixNoMapping")}</p>
+            ) : (
+              (() => {
+                // Per-package smallest fixed version walking the OSV
+                // events[] form. We don't validate ranges against a
+                // specific user version here — that's what
+                // VersionChecker on the package page is for. We just
+                // surface the public "this version onward is patched"
+                // signal so search snippets and LLM summarisers can
+                // extract a concrete remediation step.
+                const fixes = affected.map((a) => {
+                  let fixedAt: string | null = null;
+                  for (const r of a.ranges_json) {
+                    for (const ev of r.events ?? []) {
+                      if (ev.fixed) {
+                        fixedAt = ev.fixed;
+                        break;
+                      }
+                    }
+                    if (fixedAt) break;
+                  }
+                  return { ecosystem: a.ecosystem, name: a.name, fixedAt };
+                });
+                const hasAnyFix = fixes.some((f) => f.fixedAt !== null);
+                return (
+                  <>
+                    <p className="leading-relaxed mb-3">
+                      {hasAnyFix ? t("howToFixIntro", { id: cveId }) : t("howToFixNoFix")}
+                    </p>
+                    <ul className="space-y-1.5 text-sm">
+                      {fixes.map((f) => (
+                        <li key={`${f.ecosystem}/${f.name}`} className="flex flex-wrap items-baseline gap-2">
+                          <Link
+                            href={`/package/${f.ecosystem}/${f.name}`}
+                            className="font-mono no-underline"
+                          >
+                            <span className="text-xs text-[hsl(var(--muted-foreground))]">{f.ecosystem}/</span>
+                            <span>{f.name}</span>
+                          </Link>
+                          <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                          <span>
+                            {f.fixedAt
+                              ? t("fixUpgradeTo", { version: f.fixedAt })
+                              : t("fixNoneListed")}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                );
+              })()
+            )}
+          </section>
+
+          <section className={cardClass}>
+            <h2 className={sectionTitleClass}>{t("isExploitedTitle", { id: cveId })}</h2>
+            <p className="leading-relaxed">
+              {vuln.kev
+                ? t("isExploitedKev", { id: cveId })
+                : vuln.epss_score !== null && vuln.epss_score !== undefined
+                  ? vuln.epss_score >= 0.5
+                    ? t("isExploitedEpssHigh", { id: cveId, percent: (vuln.epss_score * 100).toFixed(1) })
+                    : vuln.epss_score >= 0.05
+                      ? t("isExploitedEpssMed", { id: cveId, percent: (vuln.epss_score * 100).toFixed(1) })
+                      : t("isExploitedEpssLow", { id: cveId, percent: (vuln.epss_score * 100).toFixed(1) })
+                  : t("isExploitedUnknown", { id: cveId })}
+            </p>
+          </section>
+
           <section className={cardClass}>
             <h2 className={sectionTitleClass}>{t("affectedPackages", { n: affected.length })}</h2>
             {affected.length === 0 ? (

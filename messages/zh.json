@@ -79,7 +79,21 @@
     "metadata": "資訊",
     "publishedLabel": "發布日",
     "modifiedLabel": "修改日",
-    "kevAddedLabel": "加入 KEV"
+    "kevAddedLabel": "加入 KEV",
+    "whatIsTitle": "{id} 是什麼?",
+    "whatIsNoSummary": "{id} 是 OSV 等漏洞資料庫追蹤的 CVE 紀錄,但這筆條目沒有提供摘要。",
+    "howToFixTitle": "如何修補 {id}",
+    "howToFixIntro": "要修補 {id},請將受影響套件升級到下列已修補版本。",
+    "howToFixNoFix": "目前尚未發布修補版本。可考慮移除受影響套件,或參考下方連結中的上游建議。",
+    "howToFixNoMapping": "OSV 沒有提供套件對應 — 請參考下方連結尋找廠商提供的建議。",
+    "fixUpgradeTo": "升級至 {version} 或更新版本",
+    "fixNoneListed": "未列出修補版本",
+    "isExploitedTitle": "{id} 正在被利用嗎?",
+    "isExploitedKev": "是 — {id} 已列入 CISA Known Exploited Vulnerabilities (KEV) 清單,代表正在被實際利用,請立即修補。",
+    "isExploitedEpssHigh": "可能 — EPSS 為 {percent}%,屬於高被利用機率區間,建議優先修補。",
+    "isExploitedEpssMed": "中等 — EPSS 為 {percent}%,可持續追蹤但非最高優先。",
+    "isExploitedEpssLow": "低 — EPSS 為 {percent}%,目前沒有觀察到大規模利用活動。",
+    "isExploitedUnknown": "目前沒有被利用訊號。{id} 既不在 CISA KEV 也沒有最新的 EPSS 分數。"
   },
   "Package": {
     "totalCve": "{n, plural, =0 {沒有 CVE} other {共 # 筆 CVE}}",
