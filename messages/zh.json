@@ -121,6 +121,7 @@
     "title": "深度報告",
     "subtitle": "從 VulnScope 資料庫自動產生的持續更新報告。",
     "lastUpdated": "最後更新 {date}",
+    "subscribeRss": "訂閱 RSS",
     "topPackages": {
       "title": "歷年漏洞最多的套件",
       "blurb": "所有已收錄生態系中,CVE 數量最多的套件。",

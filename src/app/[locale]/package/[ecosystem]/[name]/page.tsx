@@ -11,6 +11,8 @@ import { summarize } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 
+const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+
 // Default cap for the CVE list. 100 covers >99% of packages
 // completely; the remaining (chromium / linux kernel / openssl)
 // show a "Show all" link that re-renders with limit removed.
@@ -21,7 +23,7 @@ export async function generateMetadata({
 }: {
   params: Promise<{ locale: string; ecosystem: string; name: string }>;
 }): Promise<Metadata> {
-  const { ecosystem: ecoRaw, name: nameRaw } = await params;
+  const { locale, ecosystem: ecoRaw, name: nameRaw } = await params;
   const ecosystem = decodeURIComponent(ecoRaw);
   const rawName = decodeURIComponent(nameRaw);
   const name = ecosystem === "PyPI" ? normalizePypiName(rawName) : rawName;
@@ -29,9 +31,18 @@ export async function generateMetadata({
   if (!meta) return { title: `${ecosystem}/${name}`, robots: { index: false } };
   const title = `${ecosystem}/${name} — ${meta.cve_count} CVEs`;
   const desc = `Every CVE affecting ${ecosystem}/${name}, with version ranges, EPSS scores, and CISA KEV flags.`;
+  const pkgPath = `/package/${encodeURIComponent(ecosystem)}/${encodeURIComponent(name)}`;
   return {
     title,
     description: desc,
+    alternates: {
+      canonical: `${SITE}/${locale}${pkgPath}`,
+      languages: {
+        en: `${SITE}/en${pkgPath}`,
+        "zh-TW": `${SITE}/zh${pkgPath}`,
+        "x-default": `${SITE}/en${pkgPath}`,
+      },
+    },
     openGraph: { title, description: desc, type: "article" },
     twitter: { card: "summary_large_image", title, description: desc },
   };

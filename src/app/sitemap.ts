@@ -44,6 +44,15 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   const out: MetadataRoute.Sitemap = [];
 
+  // hreflang map for a given path. Tells Google /en/... and /zh/... are the
+  // same content in different languages, not duplicate content competing
+  // against each other. zh-TW is the IETF tag; the routing locale is just "zh".
+  const langs = (path: string) => ({
+    en: `${SITE}/en${path}`,
+    "zh-TW": `${SITE}/zh${path}`,
+    "x-default": `${SITE}/en${path}`,
+  });
+
   // Static and template pages, per locale.
   const staticPaths = [
     "",
@@ -55,8 +64,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ...INSIGHT_ECOSYSTEMS.map((eco) => `/insights/ecosystem/${eco}`),
   ];
   for (const path of staticPaths) {
+    const alternates = { languages: langs(path) };
     for (const locale of routing.locales) {
-      out.push({ url: `${SITE}/${locale}${path}`, changeFrequency: "daily", priority: 0.7 });
+      out.push({
+        url: `${SITE}/${locale}${path}`,
+        changeFrequency: "daily",
+        priority: 0.7,
+        alternates,
+      });
     }
   }
 
@@ -72,12 +87,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         LIMIT 20000`,
     );
     for (const r of cves) {
+      const alternates = { languages: langs(`/cve/${r.cve_id}`) };
       for (const locale of routing.locales) {
         out.push({
           url: `${SITE}/${locale}/cve/${r.cve_id}`,
           lastModified: r.modified_at ?? undefined,
           changeFrequency: "weekly",
           priority: 0.6,
+          alternates,
         });
       }
     }
@@ -98,11 +115,14 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         LIMIT 5000`,
     );
     for (const r of pkgs) {
+      const pkgPath = `/package/${encodeURIComponent(r.ecosystem)}/${encodeURIComponent(r.name)}`;
+      const alternates = { languages: langs(pkgPath) };
       for (const locale of routing.locales) {
         out.push({
-          url: `${SITE}/${locale}/package/${encodeURIComponent(r.ecosystem)}/${encodeURIComponent(r.name)}`,
+          url: `${SITE}/${locale}${pkgPath}`,
           changeFrequency: "weekly",
           priority: 0.6,
+          alternates,
         });
       }
     }

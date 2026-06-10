@@ -121,6 +121,7 @@
     "title": "Insights",
     "subtitle": "Continuously refreshed reports from the VulnScope database.",
     "lastUpdated": "Last updated {date}",
+    "subscribeRss": "Subscribe via RSS",
     "topPackages": {
       "title": "Most-vulnerable packages of all time",
       "blurb": "Packages with the largest number of distinct CVEs across all ingested ecosystems.",

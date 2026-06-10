@@ -4,15 +4,24 @@ import { Link } from "@/i18n/navigation";
 import { getKevCatalog } from "@/lib/insights";
 import { SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
+import { RssSubscribeButton } from "@/components/RssSubscribeButton";
 import { summarize } from "@/lib/summary";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 3600;
 
+const RSS_HREF = "/feed/severity/kev";
+
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }): Promise<Metadata> {
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "Insights.kevCatalog" });
-  return { title: t("title"), description: t("blurb") };
+  return {
+    title: t("title"),
+    description: t("blurb"),
+    alternates: {
+      types: { "application/rss+xml": [{ url: RSS_HREF, title: t("title") }] },
+    },
+  };
 }
 
 export default async function Page({ params }: { params: Promise<{ locale: string }> }) {
@@ -33,7 +42,10 @@ export default async function Page({ params }: { params: Promise<{ locale: strin
   return (
     <article className="space-y-4">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">{t("kevCatalog.title")}</h1>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <h1 className="text-2xl font-bold tracking-tight">{t("kevCatalog.title")}</h1>
+          <RssSubscribeButton href={RSS_HREF} label={t("subscribeRss")} />
+        </div>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("kevCatalog.blurb")}</p>
         <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
           {t("lastUpdated", { date: new Date().toLocaleString(dateLocale) })}

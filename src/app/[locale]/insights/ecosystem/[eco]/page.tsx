@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { getEcosystemDeepDive, INSIGHT_ECOSYSTEMS, type InsightEcosystem } from "@/lib/insights";
+import { RssSubscribeButton } from "@/components/RssSubscribeButton";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 3600;
@@ -18,9 +19,13 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { locale, eco } = await params;
   const t = await getTranslations({ locale, namespace: "Insights.ecosystemDeepDive" });
+  const rssHref = `/feed/ecosystem/${encodeURIComponent(eco)}`;
   return {
     title: t("title", { eco }),
     description: t("blurb", { eco }),
+    alternates: {
+      types: { "application/rss+xml": [{ url: rssHref, title: t("title", { eco }) }] },
+    },
   };
 }
 
@@ -35,11 +40,15 @@ export default async function Page({
   const t = await getTranslations({ locale, namespace: "Insights" });
   const dateLocale = locale === "zh" ? "zh-TW" : "en";
   const rows = await getEcosystemDeepDive(eco as InsightEcosystem, 300);
+  const rssHref = `/feed/ecosystem/${encodeURIComponent(eco)}`;
 
   return (
     <article className="space-y-4">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">{t("ecosystemDeepDive.title", { eco })}</h1>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <h1 className="text-2xl font-bold tracking-tight">{t("ecosystemDeepDive.title", { eco })}</h1>
+          <RssSubscribeButton href={rssHref} label={t("subscribeRss")} />
+        </div>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">{t("ecosystemDeepDive.blurb", { eco })}</p>
         <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
           {t("lastUpdated", { date: new Date().toLocaleString(dateLocale) })}

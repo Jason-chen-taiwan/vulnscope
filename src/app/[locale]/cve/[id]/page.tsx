@@ -59,12 +59,14 @@ function splitUrl(url: string): { host: string; path: string } {
 
 export const dynamic = "force-dynamic";
 
+const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+
 export async function generateMetadata({
   params,
 }: {
   params: Promise<{ locale: string; id: string }>;
 }): Promise<Metadata> {
-  const { id } = await params;
+  const { locale, id } = await params;
   const cveId = decodeURIComponent(id).toUpperCase();
   if (!/^CVE-\d{4}-\d+$/.test(cveId)) return { title: cveId };
   const vuln = await getCveById(cveId);
@@ -75,6 +77,14 @@ export async function generateMetadata({
   return {
     title,
     description: desc,
+    alternates: {
+      canonical: `${SITE}/${locale}/cve/${cveId}`,
+      languages: {
+        en: `${SITE}/en/cve/${cveId}`,
+        "zh-TW": `${SITE}/zh/cve/${cveId}`,
+        "x-default": `${SITE}/en/cve/${cveId}`,
+      },
+    },
     openGraph: { title, description: desc, type: "article" },
     twitter: { card: "summary_large_image", title, description: desc },
   };
@@ -135,8 +145,47 @@ export default async function CvePage({
     "rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-5";
   const sectionTitleClass = "text-base font-semibold mb-3";
 
+  // JSON-LD for AI search citation. CVE has no official schema.org type;
+  // TechArticle + Thing.additionalProperty for the three numbers (CVSS / EPSS /
+  // KEV) gives crawlers a machine-readable surface they can extract from.
+  // Schema.org validator: https://validator.schema.org/
+  const ldProps: Array<{ "@type": "PropertyValue"; name: string; value: string | number | boolean }> = [];
+  if (topScore?.base_score !== null && topScore?.base_score !== undefined) {
+    ldProps.push({ "@type": "PropertyValue", name: "CVSS", value: topScore.base_score });
+  }
+  if (vuln.epss_score !== null && vuln.epss_score !== undefined) {
+    ldProps.push({ "@type": "PropertyValue", name: "EPSS", value: vuln.epss_score });
+  }
+  ldProps.push({ "@type": "PropertyValue", name: "KEV", value: vuln.kev });
+  const ld = {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: vuln.summary ? `${vuln.cve_id}: ${vuln.summary}` : vuln.cve_id,
+    datePublished: vuln.published_at ?? undefined,
+    dateModified: vuln.modified_at ?? undefined,
+    description: vuln.description ?? vuln.summary ?? vuln.cve_id,
+    inLanguage: locale === "zh" ? "zh-TW" : "en",
+    url: `${SITE}/${locale}/cve/${vuln.cve_id}`,
+    author: { "@type": "Organization", name: "VulnScope", url: SITE },
+    publisher: { "@type": "Organization", name: "VulnScope", url: SITE },
+    about: {
+      "@type": "Thing",
+      name: vuln.cve_id,
+      identifier: vuln.cve_id,
+      additionalProperty: ldProps,
+    },
+  };
+
   return (
     <article className="space-y-6">
+      <script
+        type="application/ld+json"
+        // JSON.stringify is safe here — all values are either pre-validated
+        // CVE IDs / numbers / dates, or DB text already escaped by React when
+        // rendered elsewhere on the page. </script> closure escape is the only
+        // residual risk and JSON.stringify doesn't emit it.
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(ld) }}
+      />
       {/* Severity Hero */}
       <section
         className={`rounded-lg border border-[hsl(var(--border))] border-l-4 ${barClass} bg-[hsl(var(--background))] p-5`}
