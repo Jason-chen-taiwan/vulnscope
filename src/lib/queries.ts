@@ -16,6 +16,60 @@ import type { OsvRange } from "./osv";
  */
 const SSR_CACHE_TTL_SEC = 60;
 
+/**
+ * D1/SQLite stores `ranges_json` / `versions_json` as TEXT, whereas the old
+ * Postgres `jsonb` columns were auto-parsed to JS values by the `pg` driver.
+ * Consumers (version-match, CVE/package page components) expect parsed
+ * arrays, so we parse the TEXT here to keep the result shape identical.
+ * Tolerates already-parsed values (defensive), null/empty, and bad JSON.
+ */
+function parseJsonColumn<T>(value: unknown): T | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SQLite has no boolean type — `kev` is stored/returned as 0/1. The old
+ * Postgres path returned a real JS boolean, and several consumers rely on
+ * that (JSON-LD serialization, strict comparisons). Coerce a row's `kev`
+ * back to boolean while preserving every other field to keep the result
+ * shape identical.
+ */
+function coerceKev<T extends { kev?: unknown }>(row: T): T {
+  return { ...row, kev: Boolean(row.kev) };
+}
+
+/**
+ * FTS5 MATCH syntax is a mini-language: bare `-`, `:`, `"`, `*`, `(` etc.
+ * are operators, so a raw user string like "CVE-2021-44228" or "log4j:"
+ * throws a syntax error. We neutralise this by quoting each whitespace-
+ * delimited token as an FTS phrase (internal `"` doubled per FTS5 rules)
+ * and joining with spaces — implicit AND, matching the old Postgres
+ * `plainto_tsquery` semantics where all terms must be present.
+ */
+function ftsQuery(term: string): string {
+  return term
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((tok) => `"${tok.replace(/"/g, '""')}"`)
+    .join(" ");
+}
+
+/**
+ * For the trigram `packages_fts`, the whole search string is a single
+ * substring probe, so wrap it as one quoted phrase (again doubling `"`).
+ * This also escapes `:` / `-` / `"` that would otherwise be FTS operators.
+ */
+function trigramQuery(term: string): string {
+  return `"${term.trim().replace(/"/g, '""')}"`;
+}
+
 export interface VulnRow {
   cve_id: string;
   summary: string | null;
@@ -34,14 +88,14 @@ export interface VulnListItem extends VulnRow {
 }
 
 export async function getCveById(cveId: string): Promise<VulnRow | null> {
-  const { rows } = await pool.query(
+  const { rows } = await pool.query<VulnRow>(
     `SELECT cve_id, summary, description, published_at, modified_at,
-            kev, kev_added_at, epss_score::float8 AS epss_score,
-            epss_percentile::float8 AS epss_percentile
-       FROM vulnerabilities WHERE cve_id = $1`,
+            kev, kev_added_at, CAST(epss_score AS REAL) AS epss_score,
+            CAST(epss_percentile AS REAL) AS epss_percentile
+       FROM vulnerabilities WHERE cve_id = ?`,
     [cveId],
   );
-  return rows[0] ?? null;
+  return rows[0] ? coerceKev(rows[0]) : null;
 }
 
 /**
@@ -55,16 +109,16 @@ export async function resolveToCveId(id: string): Promise<string | null> {
   if (!trimmed) return null;
   // Fast path: it's already a CVE.
   if (/^CVE-\d{4}-\d+$/i.test(trimmed)) {
-    const { rows } = await pool.query(
-      `SELECT cve_id FROM vulnerabilities WHERE cve_id = $1`,
+    const { rows } = await pool.query<{ cve_id: string }>(
+      `SELECT cve_id FROM vulnerabilities WHERE cve_id = ?`,
       [trimmed.toUpperCase()],
     );
     return rows[0]?.cve_id ?? null;
   }
   // Alias lookup — case-sensitive because GHSA/DSA identifiers are
   // case-sensitive in their canonical form.
-  const { rows } = await pool.query(
-    `SELECT cve_id FROM vuln_aliases WHERE alias = $1 LIMIT 1`,
+  const { rows } = await pool.query<{ cve_id: string }>(
+    `SELECT cve_id FROM vuln_aliases WHERE alias = ? LIMIT 1`,
     [trimmed],
   );
   return rows[0]?.cve_id ?? null;
@@ -76,51 +130,43 @@ export async function getCveBundle(cveId: string) {
   const [{ rows: scores }, { rows: aff }, { rows: refs }, { rows: aliases }] =
     await Promise.all([
       pool.query(
-        `SELECT version, vector, base_score::float8 AS base_score, severity, source
-           FROM cvss_scores WHERE cve_id = $1 ORDER BY version DESC, source`,
+        `SELECT version, vector, CAST(base_score AS REAL) AS base_score, severity, source
+           FROM cvss_scores WHERE cve_id = ? ORDER BY version DESC, source`,
         [cveId],
       ),
-      pool.query(
+      pool.query<{ ecosystem: string; name: string; ranges_json: unknown; versions_json: unknown }>(
         `SELECT a.ecosystem, p.name, a.ranges_json, a.versions_json
            FROM affected a JOIN packages p ON p.id = a.package_id
-           WHERE a.cve_id = $1
+           WHERE a.cve_id = ?
            ORDER BY a.ecosystem, p.name`,
         [cveId],
       ),
       pool.query(
-        `SELECT url, type FROM refs WHERE cve_id = $1 ORDER BY type, url`,
+        `SELECT url, type FROM refs WHERE cve_id = ? ORDER BY type, url`,
         [cveId],
       ),
-      // Aliases table won't exist on a stale DB; tolerate the error and
-      // return [] so the page still renders. ensure-schema fixes this
-      // on the next ingest run.
-      pool
-        .query(
-          `SELECT alias, source FROM vuln_aliases WHERE cve_id = $1
-            ORDER BY CASE source
-              WHEN 'ghsa' THEN 0 WHEN 'rhsa' THEN 1
-              WHEN 'dsa'  THEN 2 WHEN 'usn'  THEN 3
-              WHEN 'alpine' THEN 4 ELSE 9 END,
-              alias`,
-          [cveId],
-        )
-        .catch(() => ({ rows: [] as { alias: string; source: string }[] })),
+      pool.query<{ alias: string; source: string }>(
+        `SELECT alias, source FROM vuln_aliases WHERE cve_id = ?
+          ORDER BY CASE source
+            WHEN 'ghsa' THEN 0 WHEN 'rhsa' THEN 1
+            WHEN 'dsa'  THEN 2 WHEN 'usn'  THEN 3
+            WHEN 'alpine' THEN 4 ELSE 9 END,
+            alias`,
+        [cveId],
+      ),
     ]);
-  // Exploits join is also done lazily — same self-healing schema
-  // logic, table may not exist on a stale DB.
-  const { rows: exploits } = await pool
-    .query<{ url: string; source: string; description: string | null }>(
-      `SELECT url, source, description FROM exploits WHERE cve_id = $1
-        ORDER BY CASE source
-          WHEN 'metasploit' THEN 0
-          WHEN 'exploit-db' THEN 1
-          WHEN 'nuclei'     THEN 2
-          WHEN 'github'     THEN 3
-          ELSE 9 END, url`,
-      [cveId],
-    )
-    .catch(() => ({ rows: [] as { url: string; source: string; description: string | null }[] }));
-  return { vuln: v, scores, affected: aff, refs, aliases, exploits };
+  // The D1 schema (build-sqlite.ts) has no `exploits` table — that data
+  // is Postgres-only enrichment that the Cloudflare build doesn't ship.
+  // Return an empty list so page rendering (which reads `bundle.exploits`)
+  // stays intact.
+  const exploits: { url: string; source: string; description: string | null }[] = [];
+  const affected = aff.map((a) => ({
+    ecosystem: a.ecosystem,
+    name: a.name,
+    ranges_json: parseJsonColumn<OsvRange[]>(a.ranges_json) ?? [],
+    versions_json: parseJsonColumn<string[]>(a.versions_json),
+  }));
+  return { vuln: v, scores, affected, refs, aliases, exploits };
 }
 
 export interface SearchFilter {
@@ -139,81 +185,89 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
 
   const where: string[] = [];
   const params: unknown[] = [];
-  let p = 0;
 
-  // CTE name we'll splice into the FROM clause when the q branch needs
-  // package-name fuzzy match.
+  // CTE we'll splice into the FROM clause when the q branch needs
+  // package-name fuzzy match. On D1 the package match runs against the
+  // `packages_fts` trigram index; the CTE materialises the matching CVE
+  // set ONCE, then the outer query does an IN lookup against the
+  // vulnerabilities PK.
   let pkgSearchCte = "";
   if (f.q && f.q.trim().length > 0) {
     const q = f.q.trim();
-    // Old shape used `OR EXISTS (… package ILIKE '%X%' …)` inside the
-    // outer WHERE. That defeated the optimizer — package-name match
-    // ended up a full scan per vulnerability row. The CTE form below
-    // materialises the matching CVE set ONCE via the existing trigram
-    // index on packages.name, then the outer query just does an IN
-    // lookup against vulnerabilities PK.
+    // Full-text over summary/description via the FTS5 `vulns_fts` porter
+    // index. Sanitise the term so FTS operator chars don't blow up MATCH.
+    params.push(ftsQuery(q));
+    // Exact/prefix CVE-id lookup, e.g. "CVE-2021-4428".
     params.push(q);
-    p++;
+
+    // Package-name fuzzy match. The trigram tokenizer needs ≥3-char
+    // tokens; for shorter queries fall back to a plain infix LIKE so a
+    // 1–2 char query still returns something.
+    let pkgMatchClause: string;
+    if (q.length >= 3) {
+      params.push(trigramQuery(q));
+      pkgMatchClause = `p2.id IN (SELECT rowid FROM packages_fts WHERE packages_fts MATCH ?)`;
+    } else {
+      params.push(`%${q}%`);
+      pkgMatchClause = `p2.name LIKE ?`;
+    }
     pkgSearchCte = `WITH pkg_match_cves AS (
         SELECT DISTINCT a.cve_id
           FROM packages p2
           JOIN affected a ON a.package_id = p2.id
-         WHERE p2.name ILIKE '%' || $${p} || '%'
+         WHERE ${pkgMatchClause}
       )`;
     where.push(
-      `(search_tsv @@ plainto_tsquery('english', $${p})
-         OR cve_id ILIKE '%' || $${p} || '%'
-         OR cve_id IN (SELECT cve_id FROM pkg_match_cves))`,
+      `(v.cve_id IN (SELECT cve_id FROM vulns_fts WHERE vulns_fts MATCH ?)
+         OR v.cve_id LIKE ? || '%'
+         OR v.cve_id IN (SELECT cve_id FROM pkg_match_cves))`,
     );
   }
-  if (f.kev === true) where.push("v.kev = true");
+  if (f.kev === true) where.push("v.kev = 1");
   if (f.severity && f.severity.length > 0) {
-    params.push(f.severity);
-    p++;
+    const ph = f.severity.map(() => "?").join(", ");
+    params.push(...f.severity);
     where.push(
-      `EXISTS (SELECT 1 FROM cvss_scores cs WHERE cs.cve_id = v.cve_id AND cs.severity = ANY($${p}::text[]))`,
+      `EXISTS (SELECT 1 FROM cvss_scores cs WHERE cs.cve_id = v.cve_id AND cs.severity IN (${ph}))`,
     );
   }
   if (f.ecosystem && f.ecosystem.length > 0) {
-    params.push(f.ecosystem);
-    p++;
+    const ph = f.ecosystem.map(() => "?").join(", ");
+    params.push(...f.ecosystem);
     where.push(
-      `EXISTS (SELECT 1 FROM affected a3 WHERE a3.cve_id = v.cve_id AND a3.ecosystem = ANY($${p}::text[]))`,
+      `EXISTS (SELECT 1 FROM affected a3 WHERE a3.cve_id = v.cve_id AND a3.ecosystem IN (${ph}))`,
     );
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const baseFrom = `FROM vulnerabilities v ${whereSql}`;
-  const totalRes = await pool.query(
-    `${pkgSearchCte} SELECT COUNT(*)::int AS c ${baseFrom}`,
+  const totalRes = await pool.query<{ c: number }>(
+    `${pkgSearchCte} SELECT COUNT(*) AS c ${baseFrom}`,
     params,
   );
-  const total = (totalRes.rows[0] as { c: number }).c;
+  const total = totalRes.rows[0]?.c ?? 0;
 
-  // Severity rollup via a subquery: pick the highest scoring CVSS row.
+  // Severity rollup via correlated subqueries: pick the highest scoring
+  // CVSS row per CVE (SQLite has no LATERAL).
   params.push(pageSize);
   params.push(offset);
   const sqlText = `
     ${pkgSearchCte}
     SELECT v.cve_id, v.summary, v.description, v.published_at, v.modified_at,
            v.kev, v.kev_added_at,
-           v.epss_score::float8 AS epss_score,
-           v.epss_percentile::float8 AS epss_percentile,
-           cs.severity AS severity, cs.base_score::float8 AS base_score
+           CAST(v.epss_score AS REAL) AS epss_score,
+           CAST(v.epss_percentile AS REAL) AS epss_percentile,
+           (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+             ORDER BY base_score DESC LIMIT 1) AS severity,
+           CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+             ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
       FROM vulnerabilities v
-      LEFT JOIN LATERAL (
-        SELECT severity, base_score
-          FROM cvss_scores
-         WHERE cve_id = v.cve_id
-         ORDER BY base_score DESC NULLS LAST
-         LIMIT 1
-      ) cs ON true
       ${whereSql}
-      ORDER BY v.published_at DESC NULLS LAST, v.cve_id DESC
-      LIMIT $${p + 1} OFFSET $${p + 2}
+      ORDER BY v.published_at DESC, v.cve_id DESC
+      LIMIT ? OFFSET ?
   `;
-  const res = await pool.query(sqlText, params);
-  return { items: res.rows as VulnListItem[], total };
+  const res = await pool.query<VulnListItem>(sqlText, params);
+  return { items: res.rows.map(coerceKev), total };
 }
 
 export interface PackageBundle {
@@ -303,14 +357,14 @@ export async function getPackageMetadata(
   ecosystem: string,
   name: string,
 ): Promise<PackageMetadata | null> {
-  const { rows: pkgRows } = await pool.query(
-    `SELECT id, ecosystem, name FROM packages WHERE ecosystem = $1 AND name = $2`,
+  const { rows: pkgRows } = await pool.query<PackageMetadata["package"]>(
+    `SELECT id, ecosystem, name FROM packages WHERE ecosystem = ? AND name = ?`,
     [ecosystem, name],
   );
   if (pkgRows.length === 0) return null;
-  const pkg = pkgRows[0] as PackageMetadata["package"];
+  const pkg = pkgRows[0];
   const { rows: cntRows } = await pool.query<{ n: number }>(
-    `SELECT COUNT(*)::int AS n FROM affected WHERE package_id = $1`,
+    `SELECT COUNT(*) AS n FROM affected WHERE package_id = ?`,
     [pkg.id],
   );
   return { package: pkg, cve_count: cntRows[0]?.n ?? 0 };
@@ -325,55 +379,54 @@ export async function getPackageWithCves(
   const cached = bundleCacheGet(cacheKey);
   if (cached !== undefined) return cached;
 
-  const { rows: pkgRows } = await pool.query(
-    `SELECT id, ecosystem, name FROM packages WHERE ecosystem = $1 AND name = $2`,
+  const { rows: pkgRows } = await pool.query<PackageBundle["package"]>(
+    `SELECT id, ecosystem, name FROM packages WHERE ecosystem = ? AND name = ?`,
     [ecosystem, name],
   );
   if (pkgRows.length === 0) {
     bundleCacheSet(cacheKey, null);
     return null;
   }
-  const pkg = pkgRows[0] as PackageBundle["package"];
+  const pkg = pkgRows[0];
 
-  // The exploits subquery uses LEFT JOIN LATERAL with a guard for
-  // tables that may not exist on a stale DB (Postgres errors at parse
-  // time if the table is missing, so we use to_regclass to short-
-  // circuit). exploits_count > 0 is the signal the CLI surfaces as
-  // \"weaponized\" — much stronger than EPSS for prioritization.
-  const exploitsExists =
-    (await pool.query<{ exists: boolean }>(
-      `SELECT to_regclass('public.exploits') IS NOT NULL AS exists`,
-    )).rows[0]?.exists ?? false;
-
-  const exploitsSelectFrag = exploitsExists
-    ? `(SELECT COUNT(*)::int FROM exploits e WHERE e.cve_id = v.cve_id)`
-    : `0`;
-
+  // The D1 schema has no `exploits` table (Postgres-only enrichment), so
+  // exploits_count is always 0 here. The correlated subqueries below pick
+  // the highest-scoring CVSS row per CVE (SQLite has no LATERAL).
   const limitSql = typeof limit === "number" && limit > 0 ? `LIMIT ${limit}` : "";
 
-  const { rows: cves } = await pool.query(
+  const { rows: rawCves } = await pool.query<
+    Omit<PackageBundle["cves"][number], "ranges_json" | "versions_json"> & {
+      ranges_json: unknown;
+      versions_json: unknown;
+    }
+  >(
     `
     SELECT v.cve_id, v.summary, v.description, v.kev,
-           v.epss_score::float8 AS epss_score,
-           cs.severity AS severity, cs.base_score::float8 AS base_score,
+           CAST(v.epss_score AS REAL) AS epss_score,
+           (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+             ORDER BY base_score DESC LIMIT 1) AS severity,
+           CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+             ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score,
            a.ranges_json, a.versions_json,
-           ${exploitsSelectFrag} AS exploits_count
+           0 AS exploits_count
       FROM affected a
       JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      LEFT JOIN LATERAL (
-        SELECT severity, base_score
-          FROM cvss_scores
-         WHERE cve_id = v.cve_id
-         ORDER BY base_score DESC NULLS LAST
-         LIMIT 1
-      ) cs ON true
-     WHERE a.package_id = $1
-     ORDER BY v.kev DESC, cs.base_score DESC NULLS LAST, v.published_at DESC NULLS LAST
-     ${limitSql}
+     WHERE a.package_id = ?
+     ORDER BY v.kev DESC,
+              (SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+                ORDER BY base_score DESC LIMIT 1) DESC,
+              v.published_at DESC
+    ${limitSql}
     `,
     [pkg.id],
   );
-  const bundle: PackageBundle = { package: pkg, cves: cves as PackageBundle["cves"] };
+  const cves: PackageBundle["cves"] = rawCves.map((c) => ({
+    ...c,
+    kev: Boolean(c.kev),
+    ranges_json: parseJsonColumn<OsvRange[]>(c.ranges_json) ?? [],
+    versions_json: parseJsonColumn<string[]>(c.versions_json),
+  }));
+  const bundle: PackageBundle = { package: pkg, cves };
   bundleCacheSet(cacheKey, bundle);
   return bundle;
 }
@@ -461,12 +514,12 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   }
   const { rows } = await pool.query(`
     SELECT
-      (SELECT COUNT(*)::int FROM vulnerabilities WHERE published_at > now() - interval '1 day') AS new_today,
-      (SELECT COUNT(*)::int FROM vulnerabilities WHERE published_at > now() - interval '7 days') AS new_week,
-      (SELECT COUNT(*)::int FROM cvss_scores WHERE severity = 'CRITICAL') AS critical_total,
-      (SELECT COUNT(*)::int FROM vulnerabilities WHERE kev = true) AS kev_total,
-      (SELECT COUNT(*)::int FROM packages) AS package_total,
-      (SELECT COUNT(*)::int FROM vulnerabilities) AS vuln_total
+      (SELECT COUNT(*) FROM vulnerabilities WHERE published_at > datetime('now','-1 day')) AS new_today,
+      (SELECT COUNT(*) FROM vulnerabilities WHERE published_at > datetime('now','-7 days')) AS new_week,
+      (SELECT COUNT(*) FROM cvss_scores WHERE severity = 'CRITICAL') AS critical_total,
+      (SELECT COUNT(*) FROM vulnerabilities WHERE kev = 1) AS kev_total,
+      (SELECT COUNT(*) FROM packages) AS package_total,
+      (SELECT COUNT(*) FROM vulnerabilities) AS vuln_total
   `);
   const value = rows[0] as DashboardStats;
   dashboardStatsCache = { at: now, value };
@@ -477,9 +530,9 @@ async function _getRecentKev(limit: number) {
   const { rows } = await pool.query(
     `SELECT cve_id, summary, description, kev_added_at
        FROM vulnerabilities
-      WHERE kev = true
-      ORDER BY kev_added_at DESC NULLS LAST
-      LIMIT $1`,
+      WHERE kev = 1
+      ORDER BY kev_added_at DESC
+      LIMIT ?`,
     [limit],
   );
   return rows as Array<{ cve_id: string; summary: string | null; description: string | null; kev_added_at: Date | null }>;
@@ -495,15 +548,15 @@ async function _getTopPackages(ecosystem: string, limit: number) {
   // affected table via the ecosystem key directly and run COUNT(DISTINCT
   // cve_id) as an index-only scan.
   const { rows } = await pool.query(
-    `SELECT a.ecosystem, p.name, COUNT(DISTINCT a.cve_id)::int AS cve_count,
-            COUNT(*) FILTER (WHERE v.kev)::int AS kev_count
+    `SELECT a.ecosystem, p.name, COUNT(DISTINCT a.cve_id) AS cve_count,
+            COUNT(*) FILTER (WHERE v.kev = 1) AS kev_count
        FROM affected a
        JOIN packages p ON p.id = a.package_id
        JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      WHERE a.ecosystem = $1
+      WHERE a.ecosystem = ?
       GROUP BY a.ecosystem, p.name
       ORDER BY kev_count DESC, cve_count DESC
-      LIMIT $2`,
+      LIMIT ?`,
     [ecosystem, limit],
   );
   return rows as Array<{ ecosystem: string; name: string; cve_count: number; kev_count: number }>;
@@ -529,27 +582,36 @@ async function _browsePackages(f: PackageListFilter) {
   const pageSize = Math.min(100, Math.max(1, f.pageSize ?? 50));
   const page = Math.max(1, f.page ?? 1);
   const offset = (page - 1) * pageSize;
+  // Package-name predicate builder. On D1 the fuzzy match uses the
+  // `packages_fts` trigram index (needs ≥3-char tokens); shorter queries
+  // fall back to a plain infix LIKE so 1–2 char searches still work.
+  const q = f.q?.trim() || "";
+  const useFts = q.length >= 3;
+  function nameMatchClause(): { clause: string; param: unknown } {
+    return useFts
+      ? { clause: `p.id IN (SELECT rowid FROM packages_fts WHERE packages_fts MATCH ?)`, param: trigramQuery(q) }
+      : { clause: `p.name LIKE ?`, param: `%${q}%` };
+  }
+
   const pkgWhere: string[] = [];
   const params: unknown[] = [];
-  let p = 0;
-  if (f.q && f.q.trim()) {
-    params.push(f.q.trim());
-    p++;
-    pkgWhere.push(`p.name ILIKE '%' || $${p} || '%'`);
+  if (q) {
+    const nm = nameMatchClause();
+    pkgWhere.push(nm.clause);
+    params.push(nm.param);
   }
   if (f.ecosystem) {
+    pkgWhere.push(`p.ecosystem = ?`);
     params.push(f.ecosystem);
-    p++;
-    pkgWhere.push(`p.ecosystem = $${p}`);
   }
   const pkgWhereSql = pkgWhere.length ? `WHERE ${pkgWhere.join(" AND ")}` : "";
 
   // Count over packages alone — fast, only touches the 15k-row table.
-  const totalRes = await pool.query(
-    `SELECT COUNT(*)::int AS c FROM packages p ${pkgWhereSql}`,
+  const totalRes = await pool.query<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM packages p ${pkgWhereSql}`,
     params,
   );
-  const total = (totalRes.rows[0] as { c: number }).c;
+  const total = totalRes.rows[0]?.c ?? 0;
 
   // Previously this query did `FROM packages p LEFT JOIN affected a LEFT
   // JOIN vulnerabilities v ... GROUP BY p.ecosystem, p.name` which forced
@@ -565,30 +627,28 @@ async function _browsePackages(f: PackageListFilter) {
 
   // affected-side filter: same predicates as packages where applicable,
   // so the pre-aggregate already excludes packages we won't show.
-  const affWhere: string[] = [];
+  // Params are appended in positional order to match the `?` placeholders:
+  // [agg ecosystem?, outer name?, outer ecosystem?, pageSize, offset].
   const affParams: unknown[] = [];
-  let ap = 0;
+  const affWhere: string[] = [];
   if (f.ecosystem) {
+    affWhere.push(`a.ecosystem = ?`);
     affParams.push(f.ecosystem);
-    ap++;
-    affWhere.push(`a.ecosystem = $${ap}`);
   }
   const affWhereSql = affWhere.length ? `WHERE ${affWhere.join(" AND ")}` : "";
 
   // Push name-filter + ecosystem-filter into the outer SELECT against
-  // packages so we can still narrow by p.name ILIKE without breaking
-  // the pre-aggregate's index path.
-  affParams.push(...params); // shift the original params after ap
-
+  // packages so we can still narrow by name without breaking the
+  // pre-aggregate's index path.
   const nameFilterClauses: string[] = [];
-  let np = ap;
-  if (f.q && f.q.trim()) {
-    np++;
-    nameFilterClauses.push(`p.name ILIKE '%' || $${np} || '%'`);
+  if (q) {
+    const nm = nameMatchClause();
+    nameFilterClauses.push(nm.clause);
+    affParams.push(nm.param);
   }
   if (f.ecosystem) {
-    np++;
-    nameFilterClauses.push(`p.ecosystem = $${np}`);
+    nameFilterClauses.push(`p.ecosystem = ?`);
+    affParams.push(f.ecosystem);
   }
   const outerWhereSql = nameFilterClauses.length
     ? `WHERE ${nameFilterClauses.join(" AND ")}`
@@ -599,8 +659,8 @@ async function _browsePackages(f: PackageListFilter) {
   const { rows } = await pool.query(
     `WITH agg AS (
        SELECT a.package_id,
-              COUNT(DISTINCT a.cve_id)::int AS cve_count,
-              COUNT(*) FILTER (WHERE v.kev)::int AS kev_count
+              COUNT(DISTINCT a.cve_id) AS cve_count,
+              COUNT(*) FILTER (WHERE v.kev = 1) AS kev_count
          FROM affected a
          JOIN vulnerabilities v ON v.cve_id = a.cve_id
          ${affWhereSql}
@@ -613,7 +673,7 @@ async function _browsePackages(f: PackageListFilter) {
        LEFT JOIN agg ON agg.package_id = p.id
        ${outerWhereSql}
       ORDER BY ${orderBy}
-      LIMIT $${np + 1} OFFSET $${np + 2}`,
+      LIMIT ? OFFSET ?`,
     affParams,
   );
   return {
@@ -654,15 +714,22 @@ export async function autocompletePackages(prefix: string, limit = 10) {
   // in the return shape as 0 so existing callers don't break — they
   // either ignore it or display it as "—".
   //
-  // Result is now a pure packages-table query: trigram index on name
-  // serves the infix ILIKE, and prefix matches sort first via the CASE.
+  // Result is a pure packages-table query. On D1 the infix match uses the
+  // `packages_fts` trigram index for ≥3-char queries; 2-char queries fall
+  // back to a plain infix LIKE (trigram needs ≥3-char tokens). Prefix
+  // matches sort first via the CASE so type-ahead feels responsive.
+  const infixMatch =
+    q.length >= 3
+      ? `id IN (SELECT rowid FROM packages_fts WHERE packages_fts MATCH ?)`
+      : `name LIKE ?`;
+  const infixParam = q.length >= 3 ? trigramQuery(q) : `%${q}%`;
   const { rows } = await pool.query(
     `SELECT ecosystem, name
        FROM packages
-      WHERE name ILIKE '%' || $1 || '%'
-      ORDER BY (CASE WHEN name ILIKE $1 || '%' THEN 0 ELSE 1 END), name
-      LIMIT $2`,
-    [q, limit],
+      WHERE ${infixMatch}
+      ORDER BY (CASE WHEN name LIKE ? || '%' THEN 0 ELSE 1 END), name
+      LIMIT ?`,
+    [infixParam, q, limit],
   );
   return rows.map((r) => ({ ...r, cve_count: 0 })) as Array<{
     ecosystem: string;
@@ -672,24 +739,23 @@ export async function autocompletePackages(prefix: string, limit = 10) {
 }
 
 async function _getRecentVulns(limit: number) {
-  const { rows } = await pool.query(
-    `SELECT v.cve_id, v.summary, v.description, v.published_at, v.kev,
-            cs.severity, cs.base_score::float8 AS base_score
-       FROM vulnerabilities v
-       LEFT JOIN LATERAL (
-         SELECT severity, base_score FROM cvss_scores
-          WHERE cve_id = v.cve_id ORDER BY base_score DESC NULLS LAST LIMIT 1
-       ) cs ON true
-      WHERE v.published_at IS NOT NULL
-      ORDER BY v.published_at DESC
-      LIMIT $1`,
-    [limit],
-  );
-  return rows as Array<{
+  const { rows } = await pool.query<{
     cve_id: string; summary: string | null; description: string | null;
     published_at: Date | null;
     kev: boolean; severity: string | null; base_score: number | null;
-  }>;
+  }>(
+    `SELECT v.cve_id, v.summary, v.description, v.published_at, v.kev,
+            (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+              ORDER BY base_score DESC LIMIT 1) AS severity,
+            CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+              ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
+       FROM vulnerabilities v
+      WHERE v.published_at IS NOT NULL
+      ORDER BY v.published_at DESC
+      LIMIT ?`,
+    [limit],
+  );
+  return rows.map(coerceKev);
 }
 export const getRecentVulns = (limit = 10) =>
   unstable_cache(_getRecentVulns, ["getRecentVulns", String(limit)], {
@@ -716,31 +782,27 @@ export async function getLatestCvesForPackage(
   name: string,
   limit = 3,
 ): Promise<VulnListItem[]> {
-  const { rows } = await pool.query(
+  const { rows } = await pool.query<VulnListItem>(
     `
     SELECT v.cve_id, v.summary, v.description,
            v.published_at, v.modified_at,
            v.kev, v.kev_added_at,
-           v.epss_score::float8 AS epss_score,
-           v.epss_percentile::float8 AS epss_percentile,
-           cs.severity, cs.base_score::float8 AS base_score
+           CAST(v.epss_score AS REAL) AS epss_score,
+           CAST(v.epss_percentile AS REAL) AS epss_percentile,
+           (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+             ORDER BY base_score DESC LIMIT 1) AS severity,
+           CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+             ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
       FROM affected a
       JOIN packages p ON p.id = a.package_id
       JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      LEFT JOIN LATERAL (
-        SELECT severity, base_score
-          FROM cvss_scores
-         WHERE cve_id = v.cve_id
-         ORDER BY base_score DESC NULLS LAST
-         LIMIT 1
-      ) cs ON true
-     WHERE p.ecosystem = $1 AND p.name = $2
-     ORDER BY v.published_at DESC NULLS LAST
-     LIMIT $3
+     WHERE p.ecosystem = ? AND p.name = ?
+     ORDER BY v.published_at DESC
+     LIMIT ?
     `,
     [ecosystem, name, limit],
   );
-  return rows as VulnListItem[];
+  return rows.map(coerceKev);
 }
 
 /**
@@ -765,29 +827,32 @@ export async function getPackageVersions(
   const { rows } = await pool.query<{ version: string }>(
     `
     WITH pkg AS (
-      SELECT id FROM packages WHERE ecosystem = $1 AND name = $2
+      SELECT id FROM packages WHERE ecosystem = ? AND name = ?
     ),
     versions_from_list AS (
-      SELECT jsonb_array_elements_text(a.versions_json) AS version
+      SELECT je.value AS version
         FROM affected a
         JOIN pkg ON pkg.id = a.package_id
-       WHERE a.versions_json IS NOT NULL
+       CROSS JOIN json_each(a.versions_json) je
+       WHERE a.versions_json IS NOT NULL AND a.versions_json <> ''
     ),
     versions_from_ranges AS (
-      SELECT ev->>'introduced' AS version
+      SELECT json_extract(ev.value, '$.introduced') AS version
         FROM affected a
         JOIN pkg ON pkg.id = a.package_id
-       CROSS JOIN LATERAL jsonb_array_elements(a.ranges_json) AS r
-       CROSS JOIN LATERAL jsonb_array_elements(r->'events') AS ev
-       WHERE ev->>'introduced' IS NOT NULL
-         AND ev->>'introduced' <> '0'
+       CROSS JOIN json_each(a.ranges_json) r
+       CROSS JOIN json_each(json_extract(r.value, '$.events')) ev
+       WHERE a.ranges_json IS NOT NULL AND a.ranges_json <> ''
+         AND json_extract(ev.value, '$.introduced') IS NOT NULL
+         AND json_extract(ev.value, '$.introduced') <> '0'
       UNION
-      SELECT ev->>'fixed' AS version
+      SELECT json_extract(ev.value, '$.fixed') AS version
         FROM affected a
         JOIN pkg ON pkg.id = a.package_id
-       CROSS JOIN LATERAL jsonb_array_elements(a.ranges_json) AS r
-       CROSS JOIN LATERAL jsonb_array_elements(r->'events') AS ev
-       WHERE ev->>'fixed' IS NOT NULL
+       CROSS JOIN json_each(a.ranges_json) r
+       CROSS JOIN json_each(json_extract(r.value, '$.events')) ev
+       WHERE a.ranges_json IS NOT NULL AND a.ranges_json <> ''
+         AND json_extract(ev.value, '$.fixed') IS NOT NULL
     )
     SELECT DISTINCT version
       FROM (
@@ -797,7 +862,7 @@ export async function getPackageVersions(
       ) all_versions
      WHERE version IS NOT NULL AND version <> ''
      ORDER BY version DESC
-     LIMIT $3
+     LIMIT ?
     `,
     [ecosystem, name, limit],
   );

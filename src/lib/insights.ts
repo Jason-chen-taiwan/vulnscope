@@ -27,9 +27,9 @@ async function _getTopPackagesAllEcos(limit: number): Promise<TopPackageRow[]> {
   const { rows } = await pool.query(
     `WITH agg AS (
        SELECT a.package_id,
-              COUNT(DISTINCT a.cve_id)::int AS cve_count,
-              COUNT(DISTINCT a.cve_id) FILTER (WHERE v.kev)::int AS kev_count,
-              MAX(v.epss_score)::float8 AS max_epss
+              COUNT(DISTINCT a.cve_id) AS cve_count,
+              COUNT(DISTINCT CASE WHEN v.kev = 1 THEN a.cve_id END) AS kev_count,
+              CAST(MAX(v.epss_score) AS REAL) AS max_epss
          FROM affected a
          JOIN vulnerabilities v ON v.cve_id = a.cve_id
         GROUP BY a.package_id
@@ -39,7 +39,7 @@ async function _getTopPackagesAllEcos(limit: number): Promise<TopPackageRow[]> {
        FROM agg
        JOIN packages p ON p.id = agg.package_id
       ORDER BY agg.kev_count DESC, agg.cve_count DESC
-      LIMIT $1`,
+      LIMIT ?`,
     [limit],
   );
   return rows as TopPackageRow[];
@@ -51,16 +51,15 @@ export const getTopPackagesAllEcos = (limit = 100): Promise<TopPackageRow[]> =>
 
 async function _getKevCatalog(limit: number) {
   const { rows } = await pool.query(
-    `SELECT v.cve_id, v.summary, v.description, v.kev_added_at, v.epss_score::float8 AS epss_score,
-            cs.severity, cs.base_score::float8 AS base_score
+    `SELECT v.cve_id, v.summary, v.description, v.kev_added_at, CAST(v.epss_score AS REAL) AS epss_score,
+            (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+              ORDER BY base_score DESC LIMIT 1) AS severity,
+            CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+              ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
        FROM vulnerabilities v
-       LEFT JOIN LATERAL (
-         SELECT severity, base_score FROM cvss_scores
-          WHERE cve_id = v.cve_id ORDER BY base_score DESC NULLS LAST LIMIT 1
-       ) cs ON true
-      WHERE v.kev = true
-      ORDER BY v.kev_added_at DESC NULLS LAST
-      LIMIT $1`,
+      WHERE v.kev = 1
+      ORDER BY v.kev_added_at DESC
+      LIMIT ?`,
     [limit],
   );
   return rows;
@@ -72,20 +71,19 @@ export const getKevCatalog = (limit = 500) =>
 
 async function _getEpssRising(limit: number) {
   const { rows } = await pool.query(
-    `SELECT v.cve_id, v.summary, v.description, v.epss_score::float8 AS epss_score,
-            v.epss_percentile::float8 AS epss_percentile, v.kev,
-            cs.severity, cs.base_score::float8 AS base_score
+    `SELECT v.cve_id, v.summary, v.description, CAST(v.epss_score AS REAL) AS epss_score,
+            CAST(v.epss_percentile AS REAL) AS epss_percentile, v.kev,
+            (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+              ORDER BY base_score DESC LIMIT 1) AS severity,
+            CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
+              ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
        FROM vulnerabilities v
-       LEFT JOIN LATERAL (
-         SELECT severity, base_score FROM cvss_scores
-          WHERE cve_id = v.cve_id ORDER BY base_score DESC NULLS LAST LIMIT 1
-       ) cs ON true
       WHERE v.epss_score IS NOT NULL
       ORDER BY v.epss_score DESC
-      LIMIT $1`,
+      LIMIT ?`,
     [limit],
   );
-  return rows;
+  return rows.map((r) => ({ ...r, kev: Boolean(r.kev) }));
 }
 export const getEpssRising = (limit = 100) =>
   unstable_cache(_getEpssRising, ["getEpssRising", String(limit)], {
@@ -98,19 +96,19 @@ async function _getEcosystemDeepDive(ecosystem: string, limit: number) {
   const { rows } = await pool.query(
     `WITH agg AS (
        SELECT a.package_id,
-              COUNT(DISTINCT a.cve_id)::int AS cve_count,
-              COUNT(DISTINCT a.cve_id) FILTER (WHERE v.kev)::int AS kev_count,
-              MAX(v.epss_score)::float8 AS max_epss
+              COUNT(DISTINCT a.cve_id) AS cve_count,
+              COUNT(DISTINCT CASE WHEN v.kev = 1 THEN a.cve_id END) AS kev_count,
+              CAST(MAX(v.epss_score) AS REAL) AS max_epss
          FROM affected a
          JOIN vulnerabilities v ON v.cve_id = a.cve_id
-        WHERE a.ecosystem = $1
+        WHERE a.ecosystem = ?
         GROUP BY a.package_id
      )
      SELECT p.name, agg.cve_count, agg.kev_count, agg.max_epss
        FROM agg
        JOIN packages p ON p.id = agg.package_id
       ORDER BY agg.kev_count DESC, agg.cve_count DESC
-      LIMIT $2`,
+      LIMIT ?`,
     [ecosystem, limit],
   );
   return rows as { name: string; cve_count: number; kev_count: number; max_epss: number | null }[];
