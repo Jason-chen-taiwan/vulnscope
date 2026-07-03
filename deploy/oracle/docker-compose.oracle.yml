@@ -1,0 +1,101 @@
+# Single-VM production stack for Oracle Cloud "Always Free" (2 vCPU / 12 GB).
+#
+# Runs all three parts of VulnScope on one box:
+#   postgres — the CVE database (replaces the external fly.io DB)
+#   web      — Next.js HTTP server (PROCESS_ROLE=web, scheduler off)
+#   worker   — daily OSV/KEV/EPSS ingest (PROCESS_ROLE=worker)
+#
+# The `web` and `worker` services share ONE image (built once from the
+# repo Dockerfile). PROCESS_ROLE picks which side boots — same split as
+# the fly.io [processes] block, just co-located instead of two machines.
+#
+# Usage on the VM (after `git clone` + creating .env — see DEPLOY.md):
+#   docker compose -f deploy/oracle/docker-compose.oracle.yml up -d --build
+#
+# The worker's daily ingest keeps CPU non-idle, which also helps avoid
+# Oracle's 7-day <20% CPU idle-reclaim of Always Free instances.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: vulnscope-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vulnscope
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vulnscope}
+      POSTGRES_DB: vulnscope
+    volumes:
+      - vulnscope-pgdata:/var/lib/postgresql/data
+      # init.sql only runs on an EMPTY data dir (first boot). It enables
+      # pg_trgm / btree_gin that the Drizzle migrations depend on.
+      - ../../docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Not published to the host — only the web/worker containers reach it
+    # over the internal compose network. Keeps Postgres off the public net.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulnscope -d vulnscope"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Runs `drizzle-kit migrate` once, then exits. web/worker wait for it so
+  # they never boot against an un-migrated schema after a fresh DB or a
+  # deploy that adds migrations.
+  migrate:
+    image: vulnscope:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://vulnscope:${POSTGRES_PASSWORD:-vulnscope}@postgres:5432/vulnscope
+    # tsx + drizzle-kit live in the image (scripts/ + drizzle/ are copied in).
+    entrypoint: ["node", "node_modules/drizzle-kit/bin.cjs", "migrate"]
+    restart: "no"
+
+  web:
+    image: vulnscope:latest
+    # No build here — reuse the image the `migrate` service builds so the
+    # Dockerfile only runs once per `up --build`.
+    container_name: vulnscope-web
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      PROCESS_ROLE: web
+      DATABASE_URL: postgres://vulnscope:${POSTGRES_PASSWORD:-vulnscope}@postgres:5432/vulnscope
+    # Published on the VM's public IP. Cloudflare (orange-cloud proxy,
+    # SSL mode = Flexible) fronts this over HTTPS; the CF->VM hop is plain
+    # HTTP on 3000, so no cert is needed on the box. See DEPLOY.md §7.
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    image: vulnscope:latest
+    container_name: vulnscope-worker
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      PROCESS_ROLE: worker
+      DATABASE_URL: postgres://vulnscope:${POSTGRES_PASSWORD:-vulnscope}@postgres:5432/vulnscope
+    # OSV ingest peaks high; give it headroom but cap so it can't starve web.
+    mem_limit: 6g
+
+volumes:
+  vulnscope-pgdata:

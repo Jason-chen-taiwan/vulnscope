@@ -19,5 +19,11 @@ dist/
 # Local-only secrets (deploy keys, etc). Never commit.
 /.secrets/
 
+# Oracle VM deploy secrets — filled from env.example on the box, never committed.
+/deploy/oracle/.env
+/deploy/oracle/cloudflared/
+
 # Output dir of tsconfig.pro.json (in-place compile of /pro)
 /.pro-compiled/
+.gstack/
+/scratch-phase0/
