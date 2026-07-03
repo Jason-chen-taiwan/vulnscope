@@ -28,3 +28,9 @@ const nextConfig: NextConfig = {
 };
 
 export default withNextIntl(nextConfig);
+
+// Populate `getCloudflareContext().env` (the D1 `DB` binding, etc.) during
+// `next dev` so server code that reads bindings works in local development.
+// No-op in production builds.
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
+void initOpenNextCloudflareForDev();

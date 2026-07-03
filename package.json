@@ -18,7 +18,9 @@
     "ingest:all": "pnpm ingest:kev && pnpm ingest:osv --ecosystem=npm,PyPI,Maven,Go,RubyGems,Packagist,crates.io,NuGet,Hex,Hackage,Debian,Alpine,Bitnami && pnpm ingest:epss",
     "build:sqlite": "node --max-old-space-size=4096 node_modules/tsx/dist/cli.mjs scripts/build-sqlite.ts",
     "test": "node node_modules/vitest/vitest.mjs run",
-    "test:watch": "node node_modules/vitest/vitest.mjs"
+    "test:watch": "node node_modules/vitest/vitest.mjs",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.1",

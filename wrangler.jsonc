@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vulnscope",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-03-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      // Preview binds to the already-seeded Phase-0 D1 (full dataset + FTS)
+      // so local preview has real data without re-seeding a fresh prod DB.
+      // A dedicated prod `vulnscope` DB is created + seeded in Phases 5-6.
+      "database_name": "vulnscope-phase0",
+      "database_id": "da9dd991-bbbb-4b1b-a9fd-82f2b43cae62"
+    }
+  ]
+}
