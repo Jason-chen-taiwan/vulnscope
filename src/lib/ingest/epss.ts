@@ -1,128 +1,70 @@
 import "server-only";
-import { fetch } from "undici";
-import { createGunzip } from "node:zlib";
-import { Readable } from "node:stream";
-import { createInterface } from "node:readline";
 import { ingestPool } from "@/db/ingest-pool";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
+import { streamEpss, type EpssRow } from "./epss-core";
 
 const META_KEY = "epss:score_date";
-
-const URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz";
-// Cloudflare in front of FIRST.org occasionally hangs the gunzip stream
-// without sending RST; without a timeout `for await (line of rl)` waits
-// forever. The full file is ~10 MB / 330k rows; 5 minutes is generous.
-const EPSS_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface RunEpssOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Postgres EPSS ingest. The fetch/gunzip/parse loop lives in
+ * ./epss-core.ts (shared with the SQLite build); this wrapper supplies
+ * the Postgres write path — a multi-VALUES `UPDATE ... FROM (VALUES ...)`
+ * — plus job + incremental-skip bookkeeping.
+ */
 export async function runEpssIngest(
   opts?: RunEpssOptions,
 ): Promise<{ seen: number; changed: number }> {
   const job = await startJob("epss");
-  let processed = 0;
-  let updated = 0;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(new Error("EPSS ingest timed out after 5 minutes")), EPSS_TIMEOUT_MS);
-  // Compose the orchestrator's source-level signal with the EPSS-internal
-  // 5-min fetch timeout so either can cancel the in-flight HTTP download.
-  // AbortSignal.any is Node 22+.
-  const fetchSignal = opts?.signal
-    ? AbortSignal.any([opts.signal, controller.signal])
-    : controller.signal;
+  let lastSeen = 0;
+  let lastChanged = 0;
+  const knownScoreDate = await getMeta(META_KEY);
+
+  async function writeBatch(batch: EpssRow[], scoreDate: string): Promise<number> {
+    const valuesSql: string[] = [];
+    const params: unknown[] = [];
+    let p = 0;
+    for (const [c, s, pct] of batch) {
+      params.push(c, s, pct);
+      valuesSql.push(`($${++p}::text, $${++p}::numeric, $${++p}::numeric)`);
+    }
+    const sqlText = `
+      UPDATE vulnerabilities v
+         SET epss_score = src.s,
+             epss_percentile = src.p,
+             epss_updated_at = $${++p}::timestamptz
+        FROM (VALUES ${valuesSql.join(",")}) AS src(cve, s, p)
+       WHERE v.cve_id = src.cve
+    `;
+    params.push(scoreDate);
+    const r = await ingestPool.query(sqlText, params);
+    return r.rowCount ?? 0;
+  }
+
   try {
-    const res = await fetch(URL, { redirect: "follow", signal: fetchSignal });
-    if (!res.ok || !res.body) throw new Error(`EPSS fetch failed: ${res.status}`);
-    const gunzip = createGunzip();
-    const src = Readable.fromWeb(res.body as never);
-    // Forward stream errors to the controller so `for await` rejects
-    // instead of hanging on a broken pipe.
-    src.on("error", (e) => controller.abort(e));
-    gunzip.on("error", (e) => controller.abort(e));
-    src.pipe(gunzip);
-
-    const rl = createInterface({ input: gunzip, crlfDelay: Infinity });
-    controller.signal.addEventListener("abort", () => {
-      rl.close();
-      gunzip.destroy();
-      src.destroy();
+    const result = await streamEpss({
+      writeBatch,
+      signal: opts?.signal,
+      knownScoreDate,
+      onProgress: (seen, changed) => {
+        lastSeen = seen;
+        lastChanged = changed;
+        // Heartbeat so the orchestrator's 5-min idle-timeout doesn't reap
+        // a healthy ingest. JobHandle.progress() is coalesced internally.
+        job.progress({ seen, changed });
+      },
     });
-    const BATCH = 1000;
-    let header: string[] | null = null;
-    let batch: [string, string, string][] = [];
-    let scoreDate: string | null = null;
-    let skipRest = false;       // set to true if score_date matches stored
-    const knownScoreDate = await getMeta(META_KEY);
-
-    async function flush() {
-      if (batch.length === 0) return;
-      const valuesSql: string[] = [];
-      const params: unknown[] = [];
-      let p = 0;
-      for (const [c, s, pct] of batch) {
-        params.push(c, s, pct);
-        valuesSql.push(`($${++p}::text, $${++p}::numeric, $${++p}::numeric)`);
-      }
-      const sqlText = `
-        UPDATE vulnerabilities v
-           SET epss_score = src.s,
-               epss_percentile = src.p,
-               epss_updated_at = $${++p}::timestamptz
-          FROM (VALUES ${valuesSql.join(",")}) AS src(cve, s, p)
-         WHERE v.cve_id = src.cve
-      `;
-      params.push(scoreDate ?? new Date().toISOString());
-      const r = await ingestPool.query(sqlText, params);
-      updated += r.rowCount ?? 0;
-      batch = [];
+    if (!result.skipped && result.scoreDate) {
+      await setMeta(META_KEY, result.scoreDate);
     }
-
-    for await (const line of rl) {
-      if (opts?.signal?.aborted) throw new Error("aborted: epss");
-      if (line.startsWith("#")) {
-        const m = line.match(/score_date:([^,\s]+)/);
-        if (m) {
-          scoreDate = m[1];
-          // Incremental skip: FIRST.org publishes a new score_date once
-          // per day. If we've already ingested this date there's nothing
-          // to do — close the stream so the for-await loop exits.
-          if (knownScoreDate && knownScoreDate === scoreDate) {
-            skipRest = true;
-            rl.close();
-            break;
-          }
-        }
-        continue;
-      }
-      if (!header) {
-        header = line.split(",");
-        continue;
-      }
-      const cols = line.split(",");
-      if (cols.length < 3) continue;
-      batch.push([cols[0], cols[1], cols[2]]);
-      processed++;
-      if (batch.length >= BATCH) {
-        await flush();
-        // Heartbeat so the orchestrator's 5-min idle-timeout
-        // doesn't reap a healthy ingest. JobHandle.progress() is
-        // coalesced to ≤1 UPDATE/sec internally; cheap to call.
-        job.progress({ seen: processed, changed: updated });
-      }
-    }
-    if (!skipRest) {
-      await flush();
-      if (scoreDate) await setMeta(META_KEY, scoreDate);
-    }
-    await job.finish({ seen: processed, changed: updated, error: null });
-    return { seen: processed, changed: updated };
+    await job.finish({ seen: result.seen, changed: result.changed, error: null });
+    return { seen: result.seen, changed: result.changed };
   } catch (err) {
-    await job.finish({ seen: processed, changed: updated, error: err as Error });
+    await job.finish({ seen: lastSeen, changed: lastChanged, error: err as Error });
     throw err;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }

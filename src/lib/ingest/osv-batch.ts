@@ -37,21 +37,9 @@
  * the zip layer — they never carry CVE aliases and bufferRecord would
  * skip them anyway; we save the inflate + parse + zod cost.
  */
-import { sql } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import type { Pool } from "pg";
 import pLimit from "p-limit";
 import yauzl from "yauzl";
 
-import {
-  vulnerabilities,
-  cvssScores,
-  packages,
-  affected,
-  refs,
-  vulnAliases,
-} from "@/db/schema";
-import * as schema from "@/db/schema";
 import {
   osvRecordSchema,
   pickCveAlias,
@@ -61,6 +49,19 @@ import {
   type OsvRecord,
 } from "@/lib/osv";
 import { baseScoreFromVector } from "@/lib/cvss";
+import type {
+  IngestSink,
+  VulnRow,
+  CvssRow,
+  AffectedRow,
+  RefRow,
+  AliasRow,
+} from "./sink";
+
+// Re-export the pg sink types under their historical names so existing
+// importers (scripts/ingest/osv.ts, src/lib/ingest/osv.ts) keep compiling.
+export type { IngestDb, IngestPool } from "./sink-pg";
+export type { IngestSink } from "./sink";
 
 // Inlined to avoid importing from scripts/ingest/_shared (which runs
 // loadEnv() at module-load — fine in CLI, unwanted in server runtime).
@@ -69,37 +70,6 @@ function parseDate(s: string | undefined | null): Date | null {
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 }
-
-export type IngestDb = NodePgDatabase<typeof schema>;
-export type IngestPool = Pool;
-
-// ─── Row shapes ──────────────────────────────────────────────────────────────
-
-type VulnRow = {
-  cveId: string;
-  sourceId: string;
-  summary: string | null;
-  description: string | null;
-  publishedAt: Date | null;
-  modifiedAt: Date | null;
-};
-type CvssRow = {
-  cveId: string;
-  version: string;
-  vector: string;
-  baseScore: string | null;
-  severity: string | null;
-};
-type AffectedRow = {
-  cveId: string;
-  packageId: number;
-  ecosystem: string;
-  rangesJson: unknown;
-  versionsJson: unknown;
-  sourceId: string;
-};
-type RefRow = { cveId: string; url: string; type: string | null };
-type AliasRow = { cveId: string; alias: string; source: string };
 
 export interface Buffers {
   vulns: VulnRow[];
@@ -148,14 +118,8 @@ export interface UpsertCtx {
 // and Fly health checks don't get starved during ingest.
 const PARSE_CHUNK = 50;
 const PARSE_CONCURRENCY = 2;
-// rows per single INSERT statement (per child table). Lowered from
-// 1000 → 500 after osv:npm hit statement_timeout in production: the
-// vulnerabilities table now carries GIN+trgm indexes whose maintenance
-// cost scales superlinearly with batch size on Fly shared CPU.
-// 500 keeps each statement comfortably under the (now 5min) timeout
-// while still keeping wire round-trips amortized — ~440 statements
-// per full npm ingest vs. ~880, both negligible vs. parse cost.
-const FLUSH_INSERT_BATCH = 500;
+// (per-INSERT batch size lives in the sink now — sink-pg.ts owns the
+// 500-row slicing that keeps each Postgres statement under statement_timeout.)
 const PKG_CACHE_HIGH_WATER = 50_000;
 const RSS_LOG_EVERY_N_CHUNKS = 20;
 
@@ -171,28 +135,13 @@ function cvssVersionLabel(type: string): string {
 export async function getOrCreatePackageId(
   ctx: UpsertCtx,
   name: string,
-  db: IngestDb,
-  pool: IngestPool,
+  sink: IngestSink,
 ): Promise<number> {
   const normName = ctx.eco === "PyPI" ? normalizePypiName(name) : name;
   const cacheKey = `${ctx.eco}:${normName}`;
   const cached = ctx.pkgCache.get(cacheKey);
   if (cached) return cached;
-  const inserted = await db
-    .insert(packages)
-    .values({ ecosystem: ctx.eco, name: normName })
-    .onConflictDoNothing({ target: [packages.ecosystem, packages.name] })
-    .returning({ id: packages.id });
-  let id: number;
-  if (inserted.length > 0) {
-    id = inserted[0].id;
-  } else {
-    const { rows } = await pool.query(
-      "SELECT id FROM packages WHERE ecosystem=$1 AND name=$2",
-      [ctx.eco, normName],
-    );
-    id = rows[0].id as number;
-  }
+  const id = await sink.getOrCreatePackageId(ctx.eco, normName);
   ctx.pkgCache.set(cacheKey, id);
   return id;
 }
@@ -213,8 +162,7 @@ export async function bufferRecord(
   ctx: UpsertCtx,
   buf: Buffers,
   rec: OsvRecord,
-  db: IngestDb,
-  pool: IngestPool,
+  sink: IngestSink,
 ): Promise<string | null> {
   const cveId = pickCveAlias(rec);
   if (!cveId) return null;
@@ -267,7 +215,7 @@ export async function bufferRecord(
 
   for (const a of rec.affected ?? []) {
     if (!ctx.ecoMatch(a.package.ecosystem)) continue;
-    const pkgId = await getOrCreatePackageId(ctx, a.package.name, db, pool);
+    const pkgId = await getOrCreatePackageId(ctx, a.package.name, sink);
     const dedupeKey = `${cveId}|${pkgId}|${rec.id}`;
     if (buf.affectedSeen.has(dedupeKey)) continue;
     buf.affectedSeen.add(dedupeKey);
@@ -314,84 +262,21 @@ export function pushAlias(
 
 // ─── Flush buffers ───────────────────────────────────────────────────────────
 
-async function flushVulns(rows: VulnRow[], db: IngestDb) {
-  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
-    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
-    await db
-      .insert(vulnerabilities)
-      .values(slice)
-      .onConflictDoUpdate({
-        target: vulnerabilities.cveId,
-        set: {
-          sourceId: sql`EXCLUDED.source_id`,
-          summary: sql`COALESCE(EXCLUDED.summary, ${vulnerabilities.summary})`,
-          description: sql`COALESCE(EXCLUDED.description, ${vulnerabilities.description})`,
-          publishedAt: sql`COALESCE(${vulnerabilities.publishedAt}, EXCLUDED.published_at)`,
-          modifiedAt: sql`COALESCE(EXCLUDED.modified_at, ${vulnerabilities.modifiedAt})`,
-        },
-      });
-  }
-}
-
-async function flushCvss(rows: CvssRow[], db: IngestDb) {
-  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
-    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
-    await db
-      .insert(cvssScores)
-      .values(slice.map((r) => ({ ...r, source: "osv" })))
-      .onConflictDoNothing({
-        target: [cvssScores.cveId, cvssScores.version, cvssScores.source],
-      });
-  }
-}
-
-async function flushAffected(rows: AffectedRow[], db: IngestDb) {
-  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
-    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
-    await db
-      .insert(affected)
-      .values(slice)
-      .onConflictDoNothing({
-        target: [affected.cveId, affected.packageId, affected.sourceId],
-      });
-  }
-}
-
-async function flushRefs(rows: RefRow[], db: IngestDb) {
-  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
-    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
-    await db
-      .insert(refs)
-      .values(slice)
-      .onConflictDoNothing({ target: [refs.cveId, refs.url] });
-  }
-}
-
-async function flushAliases(rows: AliasRow[], db: IngestDb) {
-  for (let i = 0; i < rows.length; i += FLUSH_INSERT_BATCH) {
-    const slice = rows.slice(i, i + FLUSH_INSERT_BATCH);
-    // The table has TWO unique constraints: (cveId, alias) PK +
-    // (alias) UNIQUE. Conflict target is `alias` because the alias-only
-    // collision is the broader one — a CVE/alias pair that exists is
-    // also covered by the alias-uniqueness skip.
-    await db
-      .insert(vulnAliases)
-      .values(slice)
-      .onConflictDoNothing({ target: [vulnAliases.alias] });
-  }
-}
-
 /**
  * Flushes all buffer rows. Vulnerabilities first (child tables FK to
  * cveId), then cvss / affected / refs / aliases in parallel.
+ *
+ * The per-table upsert semantics + INSERT batching live in the sink
+ * (sink-pg.ts for Postgres, sink-sqlite.ts for SQLite); this function
+ * only sequences the write order.
  */
-export async function flush(buf: Buffers, db: IngestDb) {
-  if (buf.vulns.length) await flushVulns(buf.vulns, db);
+export async function flush(buf: Buffers, sink: IngestSink) {
+  if (buf.vulns.length) await sink.flushVulns(buf.vulns);
   await Promise.all([
-    buf.cvss.length ? flushCvss(buf.cvss, db) : Promise.resolve(),
-    buf.affected.length ? flushAffected(buf.affected, db) : Promise.resolve(),
-    buf.refs.length ? flushRefs(buf.refs, db) : Promise.resolve(),
-    buf.aliases.length ? flushAliases(buf.aliases, db) : Promise.resolve(),
+    buf.cvss.length ? sink.flushCvss(buf.cvss) : Promise.resolve(),
+    buf.affected.length ? sink.flushAffected(buf.affected) : Promise.resolve(),
+    buf.refs.length ? sink.flushRefs(buf.refs) : Promise.resolve(),
+    buf.aliases.length ? sink.flushAliases(buf.aliases) : Promise.resolve(),
   ]);
 }
 
@@ -418,8 +303,11 @@ export interface StreamOsvOptions {
   ctx: UpsertCtx;
   /** Path to the OSV bulk-download zip file. */
   zipPath: string;
-  db: IngestDb;
-  pool: IngestPool;
+  /**
+   * Write target. PgIngestSink (production) or SqliteIngestSink (the D1
+   * migration build). The record→row shaping above is sink-agnostic.
+   */
+  sink: IngestSink;
   signal?: AbortSignal;
   /**
    * Called after each chunk completes its flush. Lets callers update
@@ -559,7 +447,7 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
   processed: number;
   imported: number;
 }> {
-  const { ctx, zipPath, db, pool, signal, onChunk, classifyAlias, log } = opts;
+  const { ctx, zipPath, sink, signal, onChunk, classifyAlias, log } = opts;
   const logFn = log ?? (() => {});
 
   let processed = 0;
@@ -586,7 +474,7 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
             const parsed = osvRecordSchema.safeParse(raw);
             if (!parsed.success) return;
             const rec = parsed.data;
-            const cveId = await bufferRecord(ctx, buf, rec, db, pool);
+            const cveId = await bufferRecord(ctx, buf, rec, sink);
             if (!cveId) return;
             imported++;
             for (const alias of collectAliases(rec, cveId)) {
@@ -611,7 +499,7 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
       ),
     );
     if (buf.vulns.length || buf.aliases.length) {
-      await flush(buf, db);
+      await flush(buf, sink);
     }
     maybeTrimPkgCache(ctx);
 

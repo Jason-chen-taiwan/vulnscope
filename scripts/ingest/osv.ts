@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 import { db, pool } from "../../src/db/client";
 import { streamOsvZip, type UpsertCtx } from "../../src/lib/ingest/osv-batch";
+import { PgIngestSink } from "../../src/lib/ingest/sink-pg";
 
 const BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
@@ -88,8 +89,7 @@ async function ingestEcosystem(ecoArg: string) {
     const { processed, imported } = await streamOsvZip({
       ctx,
       zipPath,
-      db,
-      pool,
+      sink: new PgIngestSink(db, pool),
       classifyAlias,
       log: (msg) => console.log(msg),
       onChunk({ processed: p, imported: i, chunkIndex }) {

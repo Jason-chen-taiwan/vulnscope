@@ -11,6 +11,7 @@ import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
 import { ensureIngestSchema } from "./ensure-schema";
 import { streamOsvZip, type UpsertCtx } from "./osv-batch";
+import { PgIngestSink } from "./sink-pg";
 
 /**
  * Classify a non-CVE identifier into a source tag so the UI can group
@@ -128,8 +129,7 @@ export async function runOsvIngest(
       const result = await streamOsvZip({
         ctx,
         zipPath,
-        db: ingestDb,
-        pool: ingestPool,
+        sink: new PgIngestSink(ingestDb, ingestPool),
         signal: opts?.signal,
         classifyAlias,
         log: (msg) => console.log(msg),

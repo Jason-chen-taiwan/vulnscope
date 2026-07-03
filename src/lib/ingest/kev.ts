@@ -1,38 +1,22 @@
 import "server-only";
-import { fetch } from "undici";
 import { sql } from "drizzle-orm";
 import { ingestDb, ingestPool } from "@/db/ingest-pool";
 import { vulnerabilities } from "@/db/schema";
 import { startJob } from "@/lib/sync-jobs";
 import { getMeta, setMeta } from "./meta";
+import { fetchKev, parseKevDate } from "./kev-core";
 
 const META_KEY = "kev:catalog_version";
-
-const KEV_URL =
-  "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
-
-interface KevEntry {
-  cveID: string;
-  vulnerabilityName: string;
-  dateAdded: string;
-  shortDescription: string;
-}
-interface KevPayload {
-  catalogVersion: string;
-  count: number;
-  vulnerabilities: KevEntry[];
-}
-
-function parseDate(s: string | undefined | null): Date | null {
-  if (!s) return null;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
 
 export interface RunKevOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Postgres KEV ingest. Fetch/parse lives in ./kev-core.ts (shared with
+ * the SQLite build); this wrapper does the Postgres upsert + job +
+ * incremental-skip bookkeeping.
+ */
 export async function runKevIngest(
   opts?: RunKevOptions,
 ): Promise<{ seen: number; changed: number }> {
@@ -40,9 +24,7 @@ export async function runKevIngest(
   let seen = 0;
   let changed = 0;
   try {
-    const res = await fetch(KEV_URL, { signal: opts?.signal });
-    if (!res.ok) throw new Error(`KEV fetch failed: ${res.status}`);
-    const payload = (await res.json()) as KevPayload;
+    const payload = await fetchKev(opts?.signal);
     seen = payload.vulnerabilities.length;
     // Incremental skip: CISA bumps catalogVersion only when the list
     // actually changes. If we've already ingested this version we still
@@ -54,7 +36,7 @@ export async function runKevIngest(
     }
     for (const e of payload.vulnerabilities) {
       if (opts?.signal?.aborted) throw new Error("aborted: kev");
-      const addedAt = parseDate(e.dateAdded);
+      const addedAt = parseKevDate(e.dateAdded);
       const r = await ingestDb
         .insert(vulnerabilities)
         .values({

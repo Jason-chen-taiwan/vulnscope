@@ -16,6 +16,7 @@
     "ingest:osv": "node --max-old-space-size=4096 node_modules/tsx/dist/cli.mjs scripts/ingest/osv.ts",
     "ingest:epss": "node node_modules/tsx/dist/cli.mjs scripts/ingest/epss.ts",
     "ingest:all": "pnpm ingest:kev && pnpm ingest:osv --ecosystem=npm,PyPI,Maven,Go,RubyGems,Packagist,crates.io,NuGet,Hex,Hackage,Debian,Alpine,Bitnami && pnpm ingest:epss",
+    "build:sqlite": "node --max-old-space-size=4096 node_modules/tsx/dist/cli.mjs scripts/build-sqlite.ts",
     "test": "node node_modules/vitest/vitest.mjs run",
     "test:watch": "node node_modules/vitest/vitest.mjs"
   },
