@@ -10,7 +10,7 @@ describe("buildSchema", () => {
     buildSchema(db);
   });
 
-  it("creates the 6 base tables", () => {
+  it("creates the 7 base tables", () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_content%' AND name NOT LIKE '%_data%' AND name NOT LIKE '%_idx%' AND name NOT LIKE '%_docsize%' AND name NOT LIKE '%_config%'`
@@ -25,11 +25,12 @@ describe("buildSchema", () => {
       "cvss_scores",
       "vuln_aliases",
       "refs",
+      "sync_jobs",
     ];
     for (const t of expected) {
       expect(tables, `table '${t}' should exist`).toContain(t);
     }
-    expect(tables).toHaveLength(6);
+    expect(tables).toHaveLength(7);
   });
 
   it("creates the 2 FTS5 virtual tables", () => {
@@ -45,7 +46,7 @@ describe("buildSchema", () => {
     expect(vtables).toHaveLength(2);
   });
 
-  it("creates the 10 plain indexes", () => {
+  it("creates the plain indexes", () => {
     const indexes = db
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'index'`)
       .all()
@@ -62,6 +63,8 @@ describe("buildSchema", () => {
       "idx_vuln_kev",
       "idx_vuln_published",
       "idx_vuln_epss",
+      "idx_sync_jobs_source_started",
+      "idx_sync_jobs_started",
     ];
     for (const idx of expected) {
       expect(indexes, `index '${idx}' should exist`).toContain(idx);

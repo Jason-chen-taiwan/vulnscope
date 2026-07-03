@@ -194,11 +194,15 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
   let pkgSearchCte = "";
   if (f.q && f.q.trim().length > 0) {
     const q = f.q.trim();
-    // Full-text over summary/description via the FTS5 `vulns_fts` porter
-    // index. Sanitise the term so FTS operator chars don't blow up MATCH.
-    params.push(ftsQuery(q));
-    // Exact/prefix CVE-id lookup, e.g. "CVE-2021-4428".
-    params.push(q);
+    // IMPORTANT: SQLite/D1 bind bare `?` markers positionally by the SQL's
+    // TEXT ORDER. The `pkg_match_cves` CTE is textually PREPENDED before the
+    // WHERE clause, so its `?` is the FIRST marker and MUST get the first
+    // pushed param. We therefore push params in textual order:
+    //   1) the CTE's package-match param (trigram phrase or LIKE pattern)
+    //   2) the `vulns_fts MATCH ?` param (sanitised FTS query)
+    //   3) the `cve_id LIKE ?` param (raw q, e.g. "CVE-2021-44228")
+    // Getting this order wrong binds the raw q to `vulns_fts MATCH`, which
+    // parses tokens like `2021` as columns → "no such column: 2021" → 500.
 
     // Package-name fuzzy match. The trigram tokenizer needs ≥3-char
     // tokens; for shorter queries fall back to a plain infix LIKE so a
@@ -211,6 +215,11 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
       params.push(`%${q}%`);
       pkgMatchClause = `p2.name LIKE ?`;
     }
+    // Full-text over summary/description via the FTS5 `vulns_fts` porter
+    // index. Sanitise the term so FTS operator chars don't blow up MATCH.
+    params.push(ftsQuery(q));
+    // Exact/prefix CVE-id lookup, e.g. "CVE-2021-4428".
+    params.push(q);
     pkgSearchCte = `WITH pkg_match_cves AS (
         SELECT DISTINCT a.cve_id
           FROM packages p2

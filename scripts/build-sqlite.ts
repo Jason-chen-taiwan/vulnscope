@@ -48,6 +48,22 @@ export function buildSchema(db: Database.Database): void {
 
     CREATE TABLE refs (cve_id TEXT, url TEXT, type TEXT);
 
+    -- Ingest bookkeeping. Mirrors the Postgres sync_jobs table (src/db/schema.ts):
+    -- timestamps as TEXT (ISO8601), counts as INTEGER. Read on the homepage
+    -- (getFreshness / isIngestRunning) so it must exist in the D1 schema or
+    -- those reads throw "no such table: sync_jobs" and 500 the homepage.
+    CREATE TABLE sync_jobs (
+      id INTEGER PRIMARY KEY,
+      source TEXT NOT NULL,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      records_seen INTEGER,
+      records_changed INTEGER,
+      error_message TEXT,
+      last_heartbeat_at TEXT
+    );
+
     -- ── Indexes ─────────────────────────────────────────────────────────────
     CREATE INDEX idx_affected_cve ON affected(cve_id);
     CREATE INDEX idx_affected_pkg ON affected(package_id);
@@ -59,6 +75,8 @@ export function buildSchema(db: Database.Database): void {
     CREATE INDEX idx_vuln_kev ON vulnerabilities(kev);
     CREATE INDEX idx_vuln_published ON vulnerabilities(published_at);
     CREATE INDEX idx_vuln_epss ON vulnerabilities(epss_score);
+    CREATE INDEX idx_sync_jobs_source_started ON sync_jobs(source, started_at);
+    CREATE INDEX idx_sync_jobs_started ON sync_jobs(started_at);
 
     -- ── FTS5 virtual tables (populated in Task 2.2) ─────────────────────────
     CREATE VIRTUAL TABLE vulns_fts USING fts5(
