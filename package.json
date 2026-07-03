@@ -23,6 +23,7 @@
     "@renovatebot/pep440": "^1.0.0",
     "@types/unzipper": "^0.10.11",
     "adm-zip": "^0.5.16",
+    "better-sqlite3": "^12.11.1",
     "drizzle-orm": "^0.36.0",
     "next": "^15.0.0",
     "next-intl": "^4.12.0",
@@ -39,6 +40,7 @@
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.5",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
