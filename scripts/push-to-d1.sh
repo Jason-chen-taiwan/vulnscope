@@ -169,8 +169,26 @@ SQL
 
   : > "$DELTA_SQL"
 
-  # ── (a) vulnerabilities: UPSERT by cve_id (preserve row, update all cols) ──
-  # excluded.* replaces every column so KEV/EPSS/summary changes all land.
+  # ── (a) vulnerabilities: UPSERT by cve_id (preserve OSV, update KEV/EPSS) ──
+  #  DATA-INTEGRITY FIX (Task 5.2): a daily KEV/EPSS-only delta build has NO OSV
+  #  data. For a CVE that is KEV-listed, the KEV ingest sets summary to the short
+  #  KEV title (vulnerabilityName) and description to the short KEV blurb, and
+  #  leaves published_at/modified_at NULL. So the delta row for a CVE that is BOTH
+  #  OSV-loaded AND KEV-listed (e.g. Log4Shell CVE-2021-44228) carries a NON-EMPTY
+  #  short KEV title/blurb and NULL dates. The old blind `excluded.*` upsert
+  #  OVERWROTE D1's rich OSV summary/description with the KEV title and NULLed
+  #  published_at/modified_at — clobbering good OSV data (and degrading vulns_fts)
+  #  6 days out of 7, healed only by Sunday's full rebuild.
+  #
+  #  Fix: mirror the exact COALESCE precedence the KEV ingest and SqliteIngestSink
+  #  already use (src/lib/ingest/kev.ts, sink-sqlite.ts): the EXISTING (OSV) value
+  #  wins for the OSV-owned text/date columns, and the delta only fills a gap when
+  #  D1 has none — `COALESCE(vulnerabilities.<col>, excluded.<col>)`. NULLIF on the
+  #  text columns treats an empty delta string as "no value". The KEV/EPSS-owned
+  #  columns take the fresh delta value (that is the daily delta's whole purpose);
+  #  kev_added_at/epss_* are COALESCE-guarded so a KEV-only row lacking EPSS never
+  #  nulls a prior EPSS score. This is also safe for future partial-ecosystem
+  #  deltas — full mode (weekly) still fully refreshes OSV text.
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO vulnerabilities (cve_id, source_id, summary, description, published_at, modified_at, kev, kev_added_at, epss_score, epss_percentile, epss_updated_at) VALUES ('
@@ -179,11 +197,18 @@ SELECT
   || quote(kev) || ',' || quote(kev_added_at) || ',' || quote(epss_score) || ','
   || quote(epss_percentile) || ',' || quote(epss_updated_at)
   || ') ON CONFLICT(cve_id) DO UPDATE SET '
-  || 'source_id=excluded.source_id, summary=excluded.summary, description=excluded.description, '
-  || 'published_at=excluded.published_at, modified_at=excluded.modified_at, '
-  || 'kev=excluded.kev, kev_added_at=excluded.kev_added_at, '
-  || 'epss_score=excluded.epss_score, epss_percentile=excluded.epss_percentile, '
-  || 'epss_updated_at=excluded.epss_updated_at;'
+  -- OSV-owned columns: existing D1 (OSV) value wins; delta only fills a gap.
+  || 'source_id=COALESCE(vulnerabilities.source_id, NULLIF(excluded.source_id,'''')), '
+  || 'summary=COALESCE(vulnerabilities.summary, NULLIF(excluded.summary,'''')), '
+  || 'description=COALESCE(vulnerabilities.description, NULLIF(excluded.description,'''')), '
+  || 'published_at=COALESCE(vulnerabilities.published_at, excluded.published_at), '
+  || 'modified_at=COALESCE(vulnerabilities.modified_at, excluded.modified_at), '
+  -- KEV/EPSS-owned columns: the daily delta exists to change these.
+  || 'kev=excluded.kev, '
+  || 'kev_added_at=COALESCE(excluded.kev_added_at, vulnerabilities.kev_added_at), '
+  || 'epss_score=COALESCE(excluded.epss_score, vulnerabilities.epss_score), '
+  || 'epss_percentile=COALESCE(excluded.epss_percentile, vulnerabilities.epss_percentile), '
+  || 'epss_updated_at=COALESCE(excluded.epss_updated_at, vulnerabilities.epss_updated_at);'
 FROM vulnerabilities;
 SQL
 
@@ -263,13 +288,17 @@ SQL
 SELECT 'DELETE FROM vulns_fts WHERE cve_id=' || quote(cve_id) || ';'
 FROM vulnerabilities;
 SQL
-  # Reinsert FTS rows from the (already-upserted) vulnerabilities on D1 side:
-  # we emit the values straight from the delta file — the vulnerabilities row
-  # is authoritative for the changed cve_ids.
+  # Reinsert FTS rows from the (already-upserted) vulnerabilities on the D1 side.
+  #  DATA-INTEGRITY FIX (Task 5.2): source summary/description from D1's
+  #  `vulnerabilities` row (the SELECT sub-query runs against D1 after the upsert
+  #  above has landed), NOT from the delta file. A KEV/EPSS-only delta's
+  #  summary/description are the short KEV title/blurb; the upsert preserved the
+  #  rich OSV text in `vulnerabilities`, so the FTS index must mirror that
+  #  preserved text or search would degrade to the KEV title.
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
-  'INSERT INTO vulns_fts (cve_id, summary, description) VALUES ('
-  || quote(cve_id) || ',' || quote(summary) || ',' || quote(description) || ');'
+  'INSERT INTO vulns_fts (cve_id, summary, description) '
+  || 'SELECT cve_id, summary, description FROM vulnerabilities WHERE cve_id=' || quote(cve_id) || ';'
 FROM vulnerabilities;
 SQL
 
