@@ -8,7 +8,6 @@ import { VersionChecker } from "@/components/VersionChecker";
 import { describeRange } from "@/lib/version-match";
 import { normalizePypiName } from "@/lib/osv";
 import { summarize } from "@/lib/summary";
-import { AddToWatchlistCTA } from "@pro/components/AddToWatchlistCTA";
 
 export const dynamic = "force-dynamic";
 
@@ -109,13 +108,7 @@ export default async function PackagePage({
               ))}
             </div>
           </div>
-          <div className="shrink-0 w-full sm:w-72">
-            <AddToWatchlistCTA
-              ecosystem={bundle.package.ecosystem}
-              name={bundle.package.name}
-              variant="card"
-            />
-          </div>
+
         </div>
       </header>
 
