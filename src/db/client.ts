@@ -1,47 +1,54 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "./schema";
+import { query as d1Query } from "./d1";
 
+/**
+ * Web-tier database client.
+ *
+ * After the Cloudflare migration the site's read path runs on Workers and
+ * reads from D1 (SQLite), not Postgres. The many existing call sites use
+ * `pool.query(sql, params)` and destructure `{ rows }`, so we keep that
+ * exact surface but back it with the D1 shim (`src/db/d1.ts`). Only the SQL
+ * dialect changed: `$1..$n` placeholders became D1's positional `?`.
+ *
+ * The generic `<T>` on `pool.query` mirrors the `pg` Pool signature that a
+ * few call sites still spell out, e.g. `pool.query<{ n: number }>(...)`.
+ */
+export const pool = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  query: <T = any>(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<{ rows: T[] }> => d1Query<T>(sql, params),
+};
+
+/**
+ * Drizzle instance is retained only so the ingest/build tooling that still
+ * imports `db`/`schema` continues to type-check. It is NOT used on the
+ * Workers read path (queries.ts only references `db` in a `void` no-op to
+ * suppress an unused-import lint). The Pool is created lazily and never
+ * connects unless a drizzle query is actually issued, so importing this
+ * module inside a Worker is side-effect-free.
+ */
 const connectionString =
   process.env.DATABASE_URL ??
   "postgres://vulnscope:vulnscope@127.0.0.1:55432/vulnscope";
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __pgPool: Pool | undefined;
-}
-
-export const pool =
-  globalThis.__pgPool ??
-  new Pool({
-    connectionString,
-    max: 10,
-    // TCP keepalive every ~10s. Fly Postgres closes idle connections
-    // silently; without keepalive, the next SSR query mid-render could
-    // hit a dead socket and throw "Connection terminated unexpectedly",
-    // which Next.js surfaces as a 5xx and Fly health check sees as
-    // unhealthy. Keepalive packets keep the kernel-level socket open
-    // between request bursts. Same fix already in ingest-pool.ts.
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10_000,
-  });
-
-// CRITICAL: pg Pool emits 'error' when an idle client's connection is
-// terminated by the server (Fly Postgres maintenance, idle timeouts,
-// failover). With no listener, Node escalates it to uncaughtException
-// and kills the whole process — observed 2026-06-08 02:16:13, which
-// took down 15 in-flight ingests at once and crashed the refresh.
-// The 'error' event is informational; pg drops the dead client from
-// the pool on its own. We just need to acknowledge.
-if (!globalThis.__pgPool) {
-  pool.on("error", (err) => {
-    console.error("[web pool] idle client error:", err.message);
-  });
-}
-
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__pgPool = pool;
-}
-
-export const db = drizzle(pool, { schema });
+let _db: ReturnType<typeof drizzle<typeof schema>> | undefined;
+/**
+ * Lazily-constructed Drizzle client. Building it (and the underlying `pg`
+ * Pool) is deferred until first use so that merely importing this module on
+ * Workers — where `queries.ts` only touches `db` in a `void` no-op — never
+ * instantiates a Postgres connection.
+ */
+export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
+  get(_target, prop) {
+    if (!_db) {
+      const pgPool = new Pool({ connectionString, max: 10 });
+      _db = drizzle(pgPool, { schema });
+    }
+    return Reflect.get(_db as object, prop);
+  },
+});
 export { schema };
