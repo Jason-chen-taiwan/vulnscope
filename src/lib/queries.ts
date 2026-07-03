@@ -772,49 +772,6 @@ export const getRecentVulns = (limit = 10) =>
   })(limit);
 
 /**
- * Top N recent CVEs for a (ecosystem, packageName) pair, joined with
- * the highest CVSS severity per CVE. Returns [] if the package is
- * unknown — callers should display a "no CVEs known yet" placeholder
- * rather than treating it as an error.
- *
- * Used by the Pro tier watchlist dashboard to show "what's the latest
- * thing I should worry about on this package" without forcing the
- * user to navigate to the full package page.
- *
- * Sort: published_at DESC (most recent first), NULLs last. We
- * deliberately don't apply the KEV-first reordering that
- * getPackageWithCves does, because the dashboard wants "what just
- * dropped" not "what's most exploited in history".
- */
-export async function getLatestCvesForPackage(
-  ecosystem: string,
-  name: string,
-  limit = 3,
-): Promise<VulnListItem[]> {
-  const { rows } = await pool.query<VulnListItem>(
-    `
-    SELECT v.cve_id, v.summary, v.description,
-           v.published_at, v.modified_at,
-           v.kev, v.kev_added_at,
-           CAST(v.epss_score AS REAL) AS epss_score,
-           CAST(v.epss_percentile AS REAL) AS epss_percentile,
-           (SELECT severity FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
-             ORDER BY base_score DESC LIMIT 1) AS severity,
-           CAST((SELECT base_score FROM cvss_scores cs WHERE cs.cve_id = v.cve_id
-             ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
-      FROM affected a
-      JOIN packages p ON p.id = a.package_id
-      JOIN vulnerabilities v ON v.cve_id = a.cve_id
-     WHERE p.ecosystem = ? AND p.name = ?
-     ORDER BY v.published_at DESC
-     LIMIT ?
-    `,
-    [ecosystem, name, limit],
-  );
-  return rows.map(coerceKev);
-}
-
-/**
  * Distinct concrete versions OSV has on file for a (ecosystem, name)
  * pair. Powers the version dropdown shown in the watchlist add flow.
  *
@@ -877,23 +834,6 @@ export async function getPackageVersions(
   );
   return rows.map((r) => r.version);
 }
-
-/**
- * Top N recent CVEs for a (ecosystem, packageName) pair, joined with
- * the highest CVSS severity per CVE. Returns [] if the package is
- * unknown — callers should display a "no CVEs known yet" placeholder
- * rather than treating it as an error.
- *
- * Used by the Pro tier watchlist dashboard to show "what's the latest
- * thing I should worry about on this package" without forcing the
- * user to navigate to the full package page.
- *
- * Sort: published_at DESC (most recent first), NULLs last. We
- * deliberately don't apply the KEV-first reordering that
- * getPackageWithCves does, because the dashboard wants "what just
- * dropped" not "what's most exploited in history".
- */
-// (function definition moved earlier in the file — see getLatestCvesForPackage above)
 
 // Suppress unused-import warnings in clients that don't need drizzle.
 void db;

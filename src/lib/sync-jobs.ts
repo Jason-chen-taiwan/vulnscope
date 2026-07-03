@@ -118,28 +118,6 @@ export async function markTimedOut(
   );
 }
 
-export async function getRecentSyncJobs(limit = 50) {
-  const { rows } = await pool.query(
-    `SELECT id, source, started_at, finished_at, status,
-            records_seen, records_changed, error_message
-       FROM sync_jobs
-       ORDER BY started_at DESC
-       LIMIT $1`,
-    [limit],
-  );
-  return rows;
-}
-
-export async function getLastSuccessfulRun(source: string): Promise<Date | null> {
-  const { rows } = await pool.query(
-    `SELECT finished_at FROM sync_jobs
-      WHERE source = $1 AND status = 'success'
-      ORDER BY finished_at DESC LIMIT 1`,
-    [source],
-  );
-  return rows[0]?.finished_at ?? null;
-}
-
 // Short in-memory caches for the two homepage SSR calls. These were the
 // only un-cached DB queries on /[locale]/page.tsx after ac38c88 — every
 // homepage render hit sync_jobs twice. During ingest, sync_jobs is the

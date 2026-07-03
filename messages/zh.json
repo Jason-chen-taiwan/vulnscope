@@ -8,16 +8,12 @@
     "packages": "套件",
     "kev": "KEV",
     "critical": "Critical",
-    "jobs": "同步紀錄",
-    "jobsTitle": "資料更新狀態",
     "searchPlaceholder": "搜尋 CVE-ID、套件名、廠商、關鍵字…",
     "language": "語言",
-    "insights": "深度報告",
-    "pricing": "方案"
+    "insights": "深度報告"
   },
   "Footer": {
     "dataFrom": "資料來自 {osv}、{kev} 與 {epss}。",
-    "syncStatus": "同步狀態",
     "github": "GitHub"
   },
   "Home": {

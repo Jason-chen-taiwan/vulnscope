@@ -58,9 +58,6 @@ import type {
   AliasRow,
 } from "./sink";
 
-// Re-export the pg sink types under their historical names so existing
-// importers (scripts/ingest/osv.ts, src/lib/ingest/osv.ts) keep compiling.
-export type { IngestDb, IngestPool } from "./sink-pg";
 export type { IngestSink } from "./sink";
 
 // Inlined to avoid importing from scripts/ingest/_shared (which runs
@@ -118,8 +115,8 @@ export interface UpsertCtx {
 // and Fly health checks don't get starved during ingest.
 const PARSE_CHUNK = 50;
 const PARSE_CONCURRENCY = 2;
-// (per-INSERT batch size lives in the sink now — sink-pg.ts owns the
-// 500-row slicing that keeps each Postgres statement under statement_timeout.)
+// (per-INSERT batch size lives in the sink now — the sink owns any
+// per-statement slicing needed by its backing store.)
 const PKG_CACHE_HIGH_WATER = 50_000;
 const RSS_LOG_EVERY_N_CHUNKS = 20;
 
@@ -267,8 +264,8 @@ export function pushAlias(
  * cveId), then cvss / affected / refs / aliases in parallel.
  *
  * The per-table upsert semantics + INSERT batching live in the sink
- * (sink-pg.ts for Postgres, sink-sqlite.ts for SQLite); this function
- * only sequences the write order.
+ * (sink-sqlite.ts for the SQLite/D1 build); this function only
+ * sequences the write order.
  */
 export async function flush(buf: Buffers, sink: IngestSink) {
   if (buf.vulns.length) await sink.flushVulns(buf.vulns);
