@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server";
-import { withRateLimit } from "@/lib/rate-limit";
 
 const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
@@ -10,10 +9,8 @@ export const revalidate = 3600;
 // pointing them at the highest-signal URLs and giving them a citation hint.
 // Same idea as robots.txt but for LLM training/retrieval crawlers.
 // Spec: https://llmstxt.org/
-export const GET = withRateLimit(
-  "feed",
-  async (_req: NextRequest) => {
-    const body = `# VulnScope
+export const GET = async (_req: NextRequest) => {
+  const body = `# VulnScope
 
 > Package-centric CVE lookup across 14 ecosystems (npm, PyPI, Maven, Go, RubyGems,
 > Packagist, crates.io, NuGet, Hex, Hackage, Debian, Alpine, Bitnami, Linux).
@@ -28,19 +25,19 @@ Every CVE page carries CVSS, EPSS (exploitation probability), and KEV (CISA
 ## Primary URLs
 
 - [CVE pages](${SITE}/en/cve/CVE-YYYY-NNNNN): one page per CVE with affected
-  packages, version ranges, CVSS/EPSS/KEV badges, references, and exploit links.
+packages, version ranges, CVSS/EPSS/KEV badges, references, and exploit links.
 - [Package pages](${SITE}/en/package/{ecosystem}/{name}): one page per package
-  with full CVE history and a version-range checker.
+with full CVE history and a version-range checker.
 - [Insights](${SITE}/en/insights): curated lists — most-vulnerable packages,
-  CISA KEV catalog, EPSS rising vulnerabilities, per-ecosystem deep-dives.
+CISA KEV catalog, EPSS rising vulnerabilities, per-ecosystem deep-dives.
 - [Search](${SITE}/en/search?q=): full-text + trigram search across CVEs
-  and packages.
+and packages.
 
 ## API
 
 - \`GET ${SITE}/api/v1/vulns/{cveId}\` — JSON envelope for a CVE bundle.
 - \`GET ${SITE}/api/v1/packages/{ecosystem}/{name}/check?version=X\` — JSON
-  version-checker: returns affected CVEs and the smallest patched version.
+version-checker: returns affected CVEs and the smallest patched version.
 
 ## Feeds
 
@@ -67,12 +64,10 @@ The web app and ingest pipeline are MIT-licensed at
 https://github.com/Jason-chen-taiwan/vulnscope (self-host with two commands).
 `;
 
-    return new Response(body, {
-      headers: {
-        "content-type": "text/plain; charset=utf-8",
-        "cache-control": "public, max-age=3600, stale-while-revalidate=7200",
-      },
-    });
-  },
-  { identityHint: "ip-only" },
-);
+  return new Response(body, {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "public, max-age=3600, stale-while-revalidate=7200",
+    },
+  });
+};

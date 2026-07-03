@@ -5,7 +5,6 @@ import { getMessages, getTranslations, setRequestLocale } from "next-intl/server
 import { HeaderSearch } from "@/components/HeaderSearch";
 import { LangSwitcher } from "@/components/LangSwitcher";
 import { Analytics } from "@/components/Analytics";
-import { AuthHeaderWidget } from "@/components/AuthHeaderWidget";
 import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import "./globals.css";
@@ -78,7 +77,6 @@ async function Footer({ locale }: { locale: string }) {
     <>
       <span>{parts}</span>
       <span className="ml-auto flex gap-3">
-        <Link href="/admin/jobs" className="underline">{tf("syncStatus")}</Link>
         <a href="https://github.com/Jason-chen-taiwan/vulnscope" className="underline" target="_blank" rel="noreferrer">{tf("github")}</a>
       </span>
     </>
@@ -114,11 +112,8 @@ export default async function LocaleLayout({
               <Link href={{ pathname: "/search", query: { kev: "true" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("kev")}</Link>
               <Link href={{ pathname: "/search", query: { severity: "CRITICAL" } }} className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("critical")}</Link>
               <Link href="/insights" className="text-sm text-[hsl(var(--muted-foreground))] no-underline">{t("insights")}</Link>
-              <Link href="/admin/jobs" className="text-sm text-[hsl(var(--muted-foreground))] no-underline" title={t("jobsTitle")}>{t("jobs")}</Link>
-              <Link href="/pricing" className="text-sm font-medium no-underline">{t("pricing")}</Link>
               <span className="ml-auto flex items-center gap-3">
                 <LangSwitcher />
-                <AuthHeaderWidget />
               </span>
             </nav>
           </header>

@@ -12,20 +12,15 @@
 import type { NextRequest } from "next/server";
 import { ok } from "@/lib/envelope";
 import { getPackageVersions } from "@/lib/queries";
-import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export const GET = withRateLimit(
-  "package_detail",
-  async (_req: NextRequest, ctx: { params: Promise<{ ecosystem: string; name: string }> }) => {
-    const { ecosystem, name } = await ctx.params;
-    const versions = await getPackageVersions(
-      decodeURIComponent(ecosystem),
-      decodeURIComponent(name),
-    );
-    return ok(versions);
-  },
-  { identityHint: "ip-only" },
-);
+export const GET = async (_req: NextRequest, ctx: { params: Promise<{ ecosystem: string; name: string }> }) => {
+  const { ecosystem, name } = await ctx.params;
+  const versions = await getPackageVersions(
+    decodeURIComponent(ecosystem),
+    decodeURIComponent(name),
+  );
+  return ok(versions);
+};
