@@ -388,7 +388,11 @@ SQL
   TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
   for BATCH in "$BATCH_DIR"/batch-*; do
     N=$((N + 1))
-    echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(grep -c ';' "$BATCH" || true) stmts)"
+    # Statements can span multiple lines (quoted description text), and the
+    # sentinels have been stripped from batch files, so we report line count,
+    # not a (misleading) ';'-based statement count. The authoritative statement
+    # total is STMT_COUNT above.
+    echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(wc -l < "$BATCH" | tr -d ' ') lines)"
     # Retry each batch up to 3x — a "D1 exceeded its CPU time limit and was
     # reset" is transient and the batch is idempotent (upsert / delete+insert
     # per cve_id), so re-applying is safe.
