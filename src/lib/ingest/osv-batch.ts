@@ -323,6 +323,14 @@ export interface StreamOsvOptions {
    * library uses console.log too (goes to fly logs).
    */
   log?: (msg: string) => void;
+  /**
+   * Optional set of PRIMARY ids (OSV record ids = zip entry filename stems,
+   * e.g. "GHSA-52v5-jr5w-gjxr") to ingest. When present, any zip entry whose
+   * primary id is NOT in the set is skipped BEFORE inflate — this is how the
+   * incremental build ingests only changed records. When absent, every entry
+   * is processed (full-build behaviour, unchanged).
+   */
+  idFilter?: Set<string>;
 }
 
 // ─── yauzl helpers ───────────────────────────────────────────────────────────
@@ -444,7 +452,7 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
   processed: number;
   imported: number;
 }> {
-  const { ctx, zipPath, sink, signal, onChunk, classifyAlias, log } = opts;
+  const { ctx, zipPath, sink, signal, onChunk, classifyAlias, log, idFilter } = opts;
   const logFn = log ?? (() => {});
 
   let processed = 0;
@@ -545,6 +553,14 @@ export async function streamOsvZip(opts: StreamOsvOptions): Promise<{
         // (110k+ on npm) into its internal buffer regardless.
         skipped++;
         continue;
+      }
+      if (idFilter) {
+        // entry.fileName is "<PRIMARY-ID>.json" (possibly path-prefixed).
+        const base = entry.fileName.replace(/^.*\//, "").replace(/\.json$/i, "");
+        if (!idFilter.has(base)) {
+          skipped++;
+          continue;
+        }
       }
       if (!loggedFirstEntryPath) {
         loggedFirstEntryPath = true;
