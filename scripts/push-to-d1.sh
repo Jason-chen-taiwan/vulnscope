@@ -204,8 +204,8 @@ SQL
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO vulnerabilities (cve_id, source_id, summary, description, published_at, modified_at, kev, kev_added_at, epss_score, epss_percentile, epss_updated_at) VALUES ('
-  || replace(quote(cve_id),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(source_id),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(summary),char(10),''''||'||char(10)||'||'''') || ','
-  || replace(quote(description),char(10),''''||'||char(10)||'||'''') || ',' || quote(published_at) || ',' || quote(modified_at) || ','
+  || quote(cve_id) || ',' || quote(source_id) || ',' || quote(summary) || ','
+  || quote(description) || ',' || quote(published_at) || ',' || quote(modified_at) || ','
   || quote(kev) || ',' || quote(kev_added_at) || ',' || quote(epss_score) || ','
   || quote(epss_percentile) || ',' || quote(epss_updated_at)
   || ') ON CONFLICT(cve_id) DO UPDATE SET '
@@ -221,6 +221,7 @@ SELECT
   || 'epss_score=COALESCE(excluded.epss_score, vulnerabilities.epss_score), '
   || 'epss_percentile=COALESCE(excluded.epss_percentile, vulnerabilities.epss_percentile), '
   || 'epss_updated_at=COALESCE(excluded.epss_updated_at, vulnerabilities.epss_updated_at);'
+  || char(10) || '--@@STMT@@'
 FROM vulnerabilities;
 SQL
 
@@ -232,6 +233,7 @@ SELECT
   'INSERT INTO packages (id, ecosystem, name) VALUES ('
   || quote(id) || ',' || quote(ecosystem) || ',' || quote(name)
   || ') ON CONFLICT(id) DO UPDATE SET ecosystem=excluded.ecosystem, name=excluded.name;'
+  || char(10) || '--@@STMT@@'
 FROM packages;
 SQL
 
@@ -246,6 +248,7 @@ SQL
   for TBL in affected cvss_scores vuln_aliases refs; do
     sqlite3 "$SQLITE_FILE" <<SQL >> "$DELTA_SQL"
 SELECT DISTINCT 'DELETE FROM $TBL WHERE cve_id=' || quote(cve_id) || ';'
+  || char(10) || '--@@STMT@@'
 FROM $TBL WHERE cve_id IS NOT NULL;
 SQL
   done
@@ -255,30 +258,34 @@ SQL
 SELECT
   'INSERT INTO affected (id, cve_id, package_id, ecosystem, ranges_json, versions_json, source_id) VALUES ('
   || quote(id) || ',' || quote(cve_id) || ',' || quote(package_id) || ','
-  || quote(ecosystem) || ',' || replace(quote(ranges_json),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(versions_json),char(10),''''||'||char(10)||'||'''') || ','
+  || quote(ecosystem) || ',' || quote(ranges_json) || ',' || quote(versions_json) || ','
   || quote(source_id) || ');'
+  || char(10) || '--@@STMT@@'
 FROM affected;
 SQL
 
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO cvss_scores (cve_id, version, vector, base_score, severity, source) VALUES ('
-  || quote(cve_id) || ',' || quote(version) || ',' || replace(quote(vector),char(10),''''||'||char(10)||'||'''') || ','
+  || quote(cve_id) || ',' || quote(version) || ',' || quote(vector) || ','
   || quote(base_score) || ',' || quote(severity) || ',' || quote(source) || ');'
+  || char(10) || '--@@STMT@@'
 FROM cvss_scores;
 SQL
 
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO vuln_aliases (cve_id, alias, source) VALUES ('
-  || quote(cve_id) || ',' || replace(quote(alias),char(10),''''||'||char(10)||'||'''') || ',' || quote(source) || ');'
+  || quote(cve_id) || ',' || quote(alias) || ',' || quote(source) || ');'
+  || char(10) || '--@@STMT@@'
 FROM vuln_aliases;
 SQL
 
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO refs (cve_id, url, type) VALUES ('
-  || quote(cve_id) || ',' || replace(quote(url),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(type),char(10),''''||'||char(10)||'||'''') || ');'
+  || quote(cve_id) || ',' || quote(url) || ',' || quote(type) || ');'
+  || char(10) || '--@@STMT@@'
 FROM refs;
 SQL
 
@@ -288,7 +295,8 @@ SELECT
   'INSERT INTO sync_jobs (source, started_at, finished_at, status, records_seen, records_changed, error_message, last_heartbeat_at) VALUES ('
   || quote(source) || ',' || quote(started_at) || ',' || quote(finished_at) || ','
   || quote(status) || ',' || quote(records_seen) || ',' || quote(records_changed) || ','
-  || replace(quote(error_message),char(10),''''||'||char(10)||'||'''') || ',' || quote(last_heartbeat_at) || ');'
+  || quote(error_message) || ',' || quote(last_heartbeat_at) || ');'
+  || char(10) || '--@@STMT@@'
 FROM sync_jobs;
 SQL
 
@@ -298,6 +306,7 @@ SQL
   #  re-insert below — so every deleted FTS row is re-created.
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT 'DELETE FROM vulns_fts WHERE cve_id=' || quote(cve_id) || ';'
+  || char(10) || '--@@STMT@@'
 FROM vulnerabilities;
 SQL
   # Reinsert FTS rows from the (already-upserted) vulnerabilities on the D1 side.
@@ -311,6 +320,7 @@ SQL
 SELECT
   'INSERT INTO vulns_fts (cve_id, summary, description) '
   || 'SELECT cve_id, summary, description FROM vulnerabilities WHERE cve_id=' || quote(cve_id) || ';'
+  || char(10) || '--@@STMT@@'
 FROM vulnerabilities;
 SQL
 
@@ -321,6 +331,7 @@ SQL
 SELECT
   'INSERT INTO packages_fts (rowid, name) SELECT ' || quote(id) || ',' || quote(name)
   || ' WHERE NOT EXISTS (SELECT 1 FROM packages_fts WHERE rowid=' || quote(id) || ');'
+  || char(10) || '--@@STMT@@'
 FROM packages;
 SQL
 
@@ -337,6 +348,7 @@ SELECT
   'INSERT INTO sync_state (source, last_modified, updated_at) VALUES ('
   || quote(source) || ',' || quote(last_modified) || ',' || quote(updated_at)
   || ') ON CONFLICT(source) DO UPDATE SET last_modified=excluded.last_modified, updated_at=excluded.updated_at;'
+  || char(10) || '--@@STMT@@'
 FROM sync_state;
 SQL
   fi
@@ -345,7 +357,7 @@ SQL
   grep -vE "$STRIP" "$DELTA_SQL" > "$DELTA_SQL.clean" && mv "$DELTA_SQL.clean" "$DELTA_SQL"
 
   local STMT_COUNT
-  STMT_COUNT=$(grep -c ';' "$DELTA_SQL" || true)
+  STMT_COUNT=$(grep -c '^--@@STMT@@$' "$DELTA_SQL" || true)
   echo "[push-to-d1]   → d1-delta.sql: $STMT_COUNT statement(s), $(wc -l < "$DELTA_SQL") lines"
 
   if [[ "$STMT_COUNT" -eq 0 ]]; then
@@ -357,17 +369,21 @@ SQL
   echo "[push-to-d1] [delta 2/3] Applying delta to D1 ($D1_DATABASE) in batches …"
   # A single `d1 execute --file` of the whole delta can exceed D1's per-request
   # CPU limit ("D1 DB exceeded its CPU time limit and was reset") on large days.
-  # Split into ordered line-chunks and apply each separately. Each generated
-  # statement is exactly one physical line because embedded newlines in text
-  # columns are encoded as '||char(10)||' in the generators above, so split -l
-  # never cuts a statement mid-way (child-table DELETE-then-INSERT for a given
-  # cve_id stay in the same relative order).
+  # Split into batches of complete statements and apply each separately.
+  # Statements may span multiple physical lines (quote() preserves embedded
+  # newlines in OSV/GHSA text), so we batch by sentinel count, not line count
+  # (child-table DELETE-then-INSERT for a given cve_id stay in relative order).
   local BATCH_DIR="$WORK_DIR/delta-batches"
   mkdir -p "$BATCH_DIR"
-  # 150 statements/batch: the FTS reinsert statements each scan `vulnerabilities`
-  # and are the heaviest, so batches must stay small to fit D1's per-request CPU
-  # limit. Combined with per-batch retries (D1 CPU resets are often transient).
-  split -l 150 "$DELTA_SQL" "$BATCH_DIR/batch-"
+  # Split into batches of complete statements. Statements may span multiple
+  # physical lines (quote() preserves newlines in OSV/GHSA description text), so
+  # we CANNOT split by line count. Each generated statement is followed by a
+  # sentinel line '--@@STMT@@'; we batch every 150 statements at sentinel
+  # boundaries and drop the sentinels from the emitted batch files.
+  awk -v dir="$BATCH_DIR" -v per=150 '
+    /^--@@STMT@@$/ { sc++; if (sc % per == 0) bi++; next }
+    { print >> (dir "/batch-" sprintf("%05d", bi)) }
+  ' "$DELTA_SQL"
   local TOTAL_BATCHES N=0
   TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
   for BATCH in "$BATCH_DIR"/batch-*; do
