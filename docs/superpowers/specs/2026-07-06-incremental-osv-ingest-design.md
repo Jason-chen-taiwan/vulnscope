@@ -77,11 +77,14 @@ Per ecosystem, independently:
 ① Read watermark for this ecosystem from D1 sync_state
    (cold start / missing row → default to "7 days ago")
 ② Stream {eco}/modified_id.csv (reverse-chronological); stop at first
-   timestamp ≤ watermark. Collect ids where id startsWith "CVE-".
-   → changedCveIds: Set<string>, newWatermark = timestamp of first (newest) line
-③ If changedCveIds is empty → skip this ecosystem (nothing changed)
-④ Download {eco}/all.zip; run streamOsvZip with idFilter = changedCveIds,
-   so only changed records are written into the incremental SQLite
+   timestamp ≤ watermark. Collect the PRIMARY ids (the csv's id column) of
+   every changed record — NOT pre-filtered to "CVE-".
+   → changedIds: Set<string>, newWatermark = timestamp of first (newest) line
+③ If changedIds is empty → skip this ecosystem (nothing changed)
+④ Download {eco}/all.zip; run streamOsvZip with idFilter = changedIds,
+   matching on the record's PRIMARY id (rec.id). Only changed records are
+   written. CVE-only scope is enforced downstream: bufferRecord returns null
+   for records with no CVE alias, so MAL-* and CVE-less GHSA-* are dropped.
 ⑤ push-to-d1.sh delta mode pushes the SQLite to D1 (existing batching+retry)
 ⑥ On success, UPSERT sync_state.last_modified = newWatermark for this ecosystem
 ```
@@ -102,9 +105,11 @@ never silently dropped.**
 Pure, DB-agnostic. Parses a `modified_id.csv` stream.
 
 - **Consumes:** ecosystem name, watermark timestamp (ISO string | null).
-- **Produces:** `{ changedCveIds: Set<string>, newWatermark: string | null }`.
+- **Produces:** `{ changedIds: Set<string>, newWatermark: string | null }`.
 - **Logic:** stream lines; for each `[modified, id]`, stop when
-  `modified <= watermark`; collect `id` where `id.startsWith("CVE-")`;
+  `modified <= watermark`; collect the primary `id` verbatim (NO `CVE-`
+  prefix filter — npm/PyPI records are keyed by `GHSA-*` with the CVE in
+  aliases; filtering the csv id would drop them);
   `newWatermark` = the timestamp of the first (newest) line, or `null` if the
   CSV was empty.
 - Timestamp comparison is ISO-8601 lexical string comparison (valid because
