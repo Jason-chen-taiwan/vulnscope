@@ -17,16 +17,24 @@
 #   hundreds of thousands of rows, so a DAILY full push would exceed the cap.
 #
 #   Steady-state design (free tier):
-#     DAILY  (05:00 UTC)  — KEV + EPSS only.  Fast (<5 min), small writes
-#                           (~1 600 CVEs × index fan-out ≈ 16k row-units).
-#                           Keeps exploit & severity scores current every morning.
+#     DAILY  (05:00 UTC)  — Incremental OSV (changed records since each
+#                           ecosystem's watermark) + full KEV + EPSS refresh.
+#                           Write footprint: changed OSV records plus KEV/EPSS
+#                           (~24k–39k row-units/day, well under the 100k/day
+#                           free cap).  Runtime is minutes in steady state;
+#                           the first cold-start run is larger (7-day window
+#                           across 13 ecosystems) and may take up to ~60 min.
 #     ON DEMAND (manual)  — Full 13-ecosystem OSV refresh.  ~677k row writes,
 #                           over the free 100k/day cap, so it is NOT scheduled.
 #                           Run via workflow_dispatch (ecosystems="full") on
 #                           Workers Paid when OSV vuln data needs a full rebuild.
 #
-# How KEV/EPSS-only works (INGEST_ECOSYSTEMS=" ")
-# ─────────────────────────────────────────────────
+# How KEV/EPSS-only works in the MANUAL (workflow_dispatch) job (INGEST_ECOSYSTEMS=" ")
+# ──────────────────────────────────────────────────────────────────────────────────────
+#   NOTE: This mechanism is used by the MANUAL job's "KEV+EPSS only" mode
+#   (empty ecosystems input). The daily scheduled job no longer uses this path —
+#   it runs build:sqlite:incremental, which always ingests OSV incrementally.
+#
 #   build-sqlite.ts reads INGEST_ECOSYSTEMS and evaluates:
 #     const ecosystems = (process.env.INGEST_ECOSYSTEMS
 #       ? INGEST_ECOSYSTEMS.split(",").map(s=>s.trim()).filter(Boolean)
@@ -59,18 +67,21 @@
 #   The initial full dataset is seeded MANUALLY in Phase 6 (run locally or
 #   via workflow_dispatch with ecosystems=full).  This scheduled workflow is
 #   NOT triggered on the first push — it only maintains an already-seeded D1.
+#   After the seed, the daily scheduled job keeps OSV data fresh incrementally
+#   (changed records since each ecosystem's watermark); a FULL OSV rebuild
+#   remains manual-only.
 # ══════════════════════════════════════════════════════════════════════════════
 
 name: Ingest → D1
 
 on:
-  # Daily lightweight refresh: KEV + EPSS only (minutes, small write footprint).
-  # A full 13-ecosystem OSV push writes ~677k rows — over the D1 free 100k/day
-  # cap — so there is NO scheduled weekly full refresh. OSV changes slowly; run
-  # a full refresh on demand via workflow_dispatch (ecosystems="full") when the
-  # account is on Workers Paid, or split across days.
+  # Daily incremental OSV + KEV + EPSS delta push. Pulls OSV records changed
+  # since each ecosystem's watermark, plus a full KEV/EPSS refresh — minutes in
+  # steady state, under the D1 free 100k/day write cap. A full 13-ecosystem OSV
+  # rebuild (~677k rows) is NOT scheduled; run on demand via workflow_dispatch
+  # (ecosystems="full") when a full refresh is needed.
   schedule:
-    - cron: "0 5 * * *"   # 05:00 UTC every day  → daily KEV/EPSS delta
+    - cron: "0 5 * * *"   # 05:00 UTC every day → incremental OSV + KEV/EPSS delta
 
   # Manual trigger: optionally override ecosystems (empty = KEV/EPSS only,
   # "full" = all 13 defaults, or comma-separated list e.g. "npm,PyPI")
@@ -99,7 +110,7 @@ jobs:
     # (handled by the manual job below).
     if: github.event_name == 'schedule' && github.event.schedule == '0 5 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60   # cold-start pulls 7d across 13 ecosystems; steady-state is minutes
 
     steps:
       - uses: actions/checkout@v4
