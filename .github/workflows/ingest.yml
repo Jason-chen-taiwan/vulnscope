@@ -88,11 +88,15 @@ on:
 # ── Jobs ─────────────────────────────────────────────────────────────────────
 
 jobs:
-  # ── Daily: KEV + EPSS only ─────────────────────────────────────────────────
-  refresh-kev-epss:
-    name: "Daily: KEV + EPSS refresh"
-    # Run only on the daily cron (05:00 UTC) — not on Sunday (which gets the
-    # full job below), and not on workflow_dispatch (handled by manual job).
+  # On the FIRST incremental run, D1's sync_state is empty, so each ecosystem
+  # cold-starts at "7 days ago" (one-time larger delta, still under the free
+  # cap). Subsequent runs pull ~1 day each.
+
+  # ── Daily: OSV incremental + KEV + EPSS ───────────────────────────────────
+  refresh-daily:
+    name: "Daily: OSV incremental + KEV + EPSS"
+    # Run only on the daily cron (05:00 UTC), not on workflow_dispatch
+    # (handled by the manual job below).
     if: github.event_name == 'schedule' && github.event.schedule == '0 5 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -112,18 +116,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build SQLite — KEV + EPSS only (no OSV ecosystems)
-        # INGEST_ECOSYSTEMS=" " (single space) → filter(Boolean) → [] →
-        # zero OSV ecosystems fetched; ingestKev + ingestEpss still run.
+      - name: Build SQLite — incremental OSV + KEV + EPSS
+        # Reads per-ecosystem watermarks from D1 (carried in the SQLite's
+        # sync_state after the previous push), ingests only OSV records changed
+        # since, plus a full KEV/EPSS refresh. Default ecosystems = all 13.
         env:
-          INGEST_ECOSYSTEMS: " "
-        run: pnpm build:sqlite
+          SQLITE_OUT: scratch-phase0/vulnscope-incremental.sqlite
+        run: pnpm build:sqlite:incremental
 
-      - name: Push to D1 (delta — merge onto existing OSV data, never wipe)
+      - name: Push to D1 (delta — merge changed OSV + KEV/EPSS, advance watermarks)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PUSH_MODE: delta
-        run: bash scripts/push-to-d1.sh vulnscope
+        run: bash scripts/push-to-d1.sh scratch-phase0/vulnscope-incremental.sqlite vulnscope delta
 
   # NOTE: There is intentionally NO scheduled weekly full-refresh job. A full
   # 13-ecosystem OSV DROP+rebuild writes ~677k rows, far over the D1 free
