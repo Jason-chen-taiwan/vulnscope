@@ -16,12 +16,14 @@
 #   Cloudflare D1 free tier: 100 000 write rows/day.  A full OSV push writes
 #   hundreds of thousands of rows, so a DAILY full push would exceed the cap.
 #
-#   Steady-state design:
+#   Steady-state design (free tier):
 #     DAILY  (05:00 UTC)  — KEV + EPSS only.  Fast (<5 min), small writes
-#                           (~1 000–2 000 rows updated).  Keeps exploit &
-#                           severity scores current every morning.
-#     WEEKLY (04:00 UTC Sunday) — Full 13-ecosystem OSV refresh.  All vuln
-#                           data is rebuilt from source and pushed to D1.
+#                           (~1 600 CVEs × index fan-out ≈ 16k row-units).
+#                           Keeps exploit & severity scores current every morning.
+#     ON DEMAND (manual)  — Full 13-ecosystem OSV refresh.  ~677k row writes,
+#                           over the free 100k/day cap, so it is NOT scheduled.
+#                           Run via workflow_dispatch (ecosystems="full") on
+#                           Workers Paid when OSV vuln data needs a full rebuild.
 #
 # How KEV/EPSS-only works (INGEST_ECOSYSTEMS=" ")
 # ─────────────────────────────────────────────────
@@ -62,10 +64,13 @@
 name: Ingest → D1
 
 on:
-  # Daily lightweight refresh: KEV + EPSS only (minutes, small write footprint)
+  # Daily lightweight refresh: KEV + EPSS only (minutes, small write footprint).
+  # A full 13-ecosystem OSV push writes ~677k rows — over the D1 free 100k/day
+  # cap — so there is NO scheduled weekly full refresh. OSV changes slowly; run
+  # a full refresh on demand via workflow_dispatch (ecosystems="full") when the
+  # account is on Workers Paid, or split across days.
   schedule:
-    - cron: "0 5 * * *"   # 05:00 UTC every day  → daily job
-    - cron: "0 4 * * 0"   # 04:00 UTC every Sunday → weekly full job
+    - cron: "0 5 * * *"   # 05:00 UTC every day  → daily KEV/EPSS delta
 
   # Manual trigger: optionally override ecosystems (empty = KEV/EPSS only,
   # "full" = all 13 defaults, or comma-separated list e.g. "npm,PyPI")
@@ -120,38 +125,12 @@ jobs:
           PUSH_MODE: delta
         run: bash scripts/push-to-d1.sh vulnscope
 
-  # ── Weekly: full 13-ecosystem OSV + KEV + EPSS ─────────────────────────────
-  refresh-full:
-    name: "Weekly: full OSV + KEV + EPSS refresh"
-    # Run on the weekly Sunday cron.
-    if: github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180   # 1–2 h ingest + push headroom; abort a hung run
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build SQLite — full 13-ecosystem ingest
-        # No INGEST_ECOSYSTEMS override → defaults to all 13 ecosystems.
-        run: pnpm build:sqlite
-
-      - name: Push to D1 (full — DROP + rebuild; weekly build has ALL data)
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          PUSH_MODE: full
-        run: bash scripts/push-to-d1.sh vulnscope
+  # NOTE: There is intentionally NO scheduled weekly full-refresh job. A full
+  # 13-ecosystem OSV DROP+rebuild writes ~677k rows, far over the D1 free
+  # 100k/day cap. OSV data changes slowly, so a full refresh is run ON DEMAND
+  # via the manual job below (Actions → "Ingest → D1" → Run workflow →
+  # ecosystems="full") — do that while the account is on Workers Paid, or after
+  # splitting the push across days. Daily KEV/EPSS deltas keep the site current.
 
   # ── Manual: workflow_dispatch with optional ecosystem override ──────────────
   refresh-manual:
