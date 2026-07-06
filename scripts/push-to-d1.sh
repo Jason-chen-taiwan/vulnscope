@@ -225,14 +225,15 @@ SELECT
 FROM vulnerabilities;
 SQL
 
-  # ── (b) packages: UPSERT by id. Package ids are stable within a full-corpus
-  #        build; a KEV/EPSS-only delta carries ZERO package rows. DO UPDATE is
-  #        safe (name/eco identical for a given id). ──
+  # ── (b) packages: get-or-create by natural key (ecosystem, name). ──
+  #        Local rowids are meaningless in D1 (assigned from an independent full
+  #        seed); keying on id would silently rename whichever D1 package already
+  #        occupies that id. Instead, INSERT only when the (ecosystem, name) pair
+  #        is absent, letting D1 assign/keep its own id. ──
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
-  'INSERT INTO packages (id, ecosystem, name) VALUES ('
-  || quote(id) || ',' || quote(ecosystem) || ',' || quote(name)
-  || ') ON CONFLICT(id) DO UPDATE SET ecosystem=excluded.ecosystem, name=excluded.name;'
+  'INSERT INTO packages (ecosystem, name) SELECT ' || quote(ecosystem) || ',' || quote(name)
+  || ' WHERE NOT EXISTS (SELECT 1 FROM packages WHERE ecosystem=' || quote(ecosystem) || ' AND name=' || quote(name) || ');'
   || char(10) || '--@@STMT@@'
 FROM packages;
 SQL
@@ -253,15 +254,18 @@ FROM $TBL WHERE cve_id IS NOT NULL;
 SQL
   done
 
-  # affected inserts (id preserved so package_id references stay consistent).
+  # affected inserts: resolve package_id against D1 by (ecosystem, name) — do
+  # NOT carry the local rowid or local package_id, both of which are unrelated
+  # to D1's id-space. The packages block above (Fix A) runs first, so the
+  # subquery will always find the package. D1 assigns affected.id freely; the
+  # per-cve_id DELETE above already cleared the slate for these cve_ids.
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
-  'INSERT INTO affected (id, cve_id, package_id, ecosystem, ranges_json, versions_json, source_id) VALUES ('
-  || quote(id) || ',' || quote(cve_id) || ',' || quote(package_id) || ','
-  || quote(ecosystem) || ',' || quote(ranges_json) || ',' || quote(versions_json) || ','
-  || quote(source_id) || ');'
+  'INSERT INTO affected (cve_id, package_id, ecosystem, ranges_json, versions_json, source_id) SELECT '
+  || quote(a.cve_id) || ', (SELECT id FROM packages WHERE ecosystem=' || quote(p.ecosystem) || ' AND name=' || quote(p.name) || '), '
+  || quote(a.ecosystem) || ',' || quote(a.ranges_json) || ',' || quote(a.versions_json) || ',' || quote(a.source_id) || ';'
   || char(10) || '--@@STMT@@'
-FROM affected;
+FROM affected a JOIN packages p ON p.id = a.package_id;
 SQL
 
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
