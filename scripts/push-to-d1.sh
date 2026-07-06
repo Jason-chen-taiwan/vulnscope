@@ -344,14 +344,31 @@ SQL
   # DELETE-then-INSERT for a given cve_id stay in the same relative order).
   local BATCH_DIR="$WORK_DIR/delta-batches"
   mkdir -p "$BATCH_DIR"
-  # ~400 statements/batch keeps each execute well under the CPU limit.
-  split -l 400 "$DELTA_SQL" "$BATCH_DIR/batch-"
+  # 150 statements/batch: the FTS reinsert statements each scan `vulnerabilities`
+  # and are the heaviest, so batches must stay small to fit D1's per-request CPU
+  # limit. Combined with per-batch retries (D1 CPU resets are often transient).
+  split -l 150 "$DELTA_SQL" "$BATCH_DIR/batch-"
   local TOTAL_BATCHES N=0
   TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
   for BATCH in "$BATCH_DIR"/batch-*; do
     N=$((N + 1))
     echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(grep -c ';' "$BATCH" || true) stmts)"
-    $WRANGLER d1 execute "$D1_DATABASE" --file="$BATCH" --remote --yes
+    # Retry each batch up to 3x — a "D1 exceeded its CPU time limit and was
+    # reset" is transient and the batch is idempotent (upsert / delete+insert
+    # per cve_id), so re-applying is safe.
+    local ATTEMPT=1 OK=0
+    while [[ "$ATTEMPT" -le 3 ]]; do
+      if $WRANGLER d1 execute "$D1_DATABASE" --file="$BATCH" --remote --yes; then
+        OK=1; break
+      fi
+      echo "[push-to-d1]     ⚠ batch $N attempt $ATTEMPT failed; retrying …"
+      ATTEMPT=$((ATTEMPT + 1))
+      sleep 5
+    done
+    if [[ "$OK" -ne 1 ]]; then
+      echo "[push-to-d1] ERROR: batch $N failed after 3 attempts"
+      return 1
+    fi
   done
   echo "[push-to-d1]   → delta applied in $TOTAL_BATCHES batch(es) (no tables dropped; existing data preserved)"
 }
