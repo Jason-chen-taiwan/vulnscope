@@ -8,7 +8,6 @@ import { KevBadge, SeverityBadge } from "@/components/SeverityBadge";
 import { EpssBadge } from "@/components/EpssBadge";
 import { describeRange } from "@/lib/version-match";
 import type { OsvRange } from "@/lib/osv";
-import { AddToWatchlistCTA } from "@pro/components/AddToWatchlistCTA";
 
 /**
  * Best-effort external URL for an advisory alias. We only link to
@@ -336,7 +335,6 @@ export default async function CvePage({
                     <span className="flex-1 min-w-0 text-sm text-[hsl(var(--muted-foreground))] font-mono">
                       {a.ranges_json.map((r) => describeRange(r)).filter(Boolean).join("  |  ")}
                     </span>
-                    <AddToWatchlistCTA ecosystem={a.ecosystem} name={a.name} variant="inline" />
                   </li>
                 ))}
               </ul>

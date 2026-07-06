@@ -2,7 +2,6 @@ import { NextRequest } from "next/server";
 import { checkPackageVersion } from "@/lib/queries";
 import { ok, fail, corsPreflight } from "@/lib/envelope";
 import { normalizePypiName } from "@/lib/osv";
-import { withRateLimit } from "@/lib/rate-limit";
 import { supportedEcosystems } from "@/lib/version";
 
 export const dynamic = "force-dynamic";
@@ -10,34 +9,30 @@ export const dynamic = "force-dynamic";
 // Compute once at module load — the dispatch table is static.
 const SUPPORTED = new Set(supportedEcosystems());
 
-export const GET = withRateLimit(
-  "package_detail",
-  async (
+export const GET = async (
     req: NextRequest,
     ctx: { params: Promise<{ ecosystem: string; name: string }> },
   ) => {
-    const { ecosystem: ecoRaw, name: nameRaw } = await ctx.params;
-    const ecosystem = decodeURIComponent(ecoRaw);
-    const name = decodeURIComponent(nameRaw);
-    const version = req.nextUrl.searchParams.get("version");
-    if (!version || version.trim() === "") {
-      return fail(400, "MISSING_VERSION", "version query param is required", "version");
-    }
-    if (!SUPPORTED.has(ecosystem)) {
-      return fail(
-        400,
-        "UNSUPPORTED_ECOSYSTEM",
-        `Version checking for "${ecosystem}" is not supported. Supported: ${[...SUPPORTED].join(", ")}`,
-        "ecosystem",
-      );
-    }
-    const normalized = ecosystem === "PyPI" ? normalizePypiName(name) : name;
-    const result = await checkPackageVersion(ecosystem, normalized, version.trim());
-    if (!result) return fail(404, "NOT_FOUND", `pkg:${ecosystem}/${normalized} unknown`);
-    return ok(result);
-  },
-  { identityHint: "ip-only" },
-);
+  const { ecosystem: ecoRaw, name: nameRaw } = await ctx.params;
+  const ecosystem = decodeURIComponent(ecoRaw);
+  const name = decodeURIComponent(nameRaw);
+  const version = req.nextUrl.searchParams.get("version");
+  if (!version || version.trim() === "") {
+    return fail(400, "MISSING_VERSION", "version query param is required", "version");
+  }
+  if (!SUPPORTED.has(ecosystem)) {
+    return fail(
+      400,
+      "UNSUPPORTED_ECOSYSTEM",
+      `Version checking for "${ecosystem}" is not supported. Supported: ${[...SUPPORTED].join(", ")}`,
+      "ecosystem",
+    );
+  }
+  const normalized = ecosystem === "PyPI" ? normalizePypiName(name) : name;
+  const result = await checkPackageVersion(ecosystem, normalized, version.trim());
+  if (!result) return fail(404, "NOT_FOUND", `pkg:${ecosystem}/${normalized} unknown`);
+  return ok(result);
+};
 
 export async function OPTIONS() {
   return corsPreflight();

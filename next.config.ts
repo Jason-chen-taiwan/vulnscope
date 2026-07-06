@@ -1,70 +1,56 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
-/**
- * Open Core via webpack alias.
- *
- * Pro tier code lives in a private repo cloned into ./pro at Docker
- * build time. OSS / self-host builds don't have ./pro on disk — they
- * fall through to ./pro-stub, which exports the same surface as
- * no-ops (null user, 404 handlers, etc.). This way:
- *   - one codebase builds in both modes
- *   - webpack bundles Pro normally (no dynamic import, no runtime
- *     module-resolution dance, no extra node_modules splicing in the
- *     standalone Docker output)
- *   - the OSS image silently 404s Pro routes
- *
- * The alias is computed once at config load. Don't try to flip it per-
- * request — webpack only resolves modules at build time.
- */
-const PRO_DIR = path.resolve(__dirname, "pro");
-const PRO_STUB_DIR = path.resolve(__dirname, "pro-stub");
-const PRO_ROOT = existsSync(path.join(PRO_DIR, "auth", "config.ts"))
-  ? PRO_DIR
-  : PRO_STUB_DIR;
+// Edge-cache policy for pages whose data only changes on the daily ingest.
+// 1-day fresh at the shared/CDN edge (Cloudflare honours `s-maxage`), then
+// up to 7 days of stale-while-revalidate. `s-maxage` (not `max-age`) keeps
+// browsers from over-caching while letting Cloudflare's edge serve repeat
+// bot/crawler hits WITHOUT invoking the Worker or reading D1 — mandatory to
+// stay under D1's free-tier read cap (a single uncached CVE query reads
+// ~65.8k rows; the free cap is 5M rows/day).
+const EDGE_CACHE = "public, s-maxage=86400, stale-while-revalidate=604800";
 
-// Surfaced in build logs so a misconfigured hosted deploy (no /pro
-// after the build secret was supposed to clone it) is obvious.
-// eslint-disable-next-line no-console
-console.log(
-  `[next.config] Pro alias → ${path.relative(__dirname, PRO_ROOT)}/` +
-    (PRO_ROOT === PRO_STUB_DIR ? " (OSS / stub mode)" : " (hosted Pro)"),
-);
+// Locale segment is always present (routing.localePrefix = "always") and is
+// one of the configured locales. Anchoring to `(en|zh)` avoids accidentally
+// matching non-locale first segments.
+const LOCALE = "(en|zh)";
+
+const cacheableHeader = (source: string) => ({
+  source,
+  headers: [{ key: "Cache-Control", value: EDGE_CACHE }],
+});
 
 const nextConfig: NextConfig = {
-  // Standalone output produces a minimal node_modules + server.js bundle —
-  // required for the Docker production image to stay under ~250 MB.
-  output: "standalone",
-  outputFileTracingRoot: __dirname,
   serverExternalPackages: [
     "@renovatebot/pep440",
     "xregexp",
-    "pg",
-    "undici",
-    // Pro tier deps. Externalized so webpack doesn't try to trace
-    // into Better Auth's kysely-adapter (which references kysely
-    // exports that don't actually exist — guarded by runtime checks
-    // we never hit because we only use the drizzle adapter). With
-    // these listed here, Next.js standalone copies the packages into
-    // node_modules and we let Node resolve them at runtime.
-    "better-auth",
-    "@polar-sh/sdk",
-    // yauzl is the active zip reader (pull-based, lazyEntries mode)
-    // for OSV ingest. Externalizing keeps Next's webpack tracer from
-    // over-resolving its CJS internals at build time.
-    "yauzl",
-    // unzipper stays listed even though we no longer use it directly:
-    // it's a transitive dep of other tooling and its Open/index.js
-    // lazy-requires @aws-sdk/client-s3, which would otherwise fail
-    // the build with "Module not found: Can't resolve '@aws-sdk/client-s3'".
-    "unzipper",
   ],
   experimental: {
     serverActions: { bodySizeLimit: "2mb" },
+  },
+  // `headers()` is applied by the Next server at the routing layer (before the
+  // filesystem) and OpenNext honours it for rendered page responses. It runs
+  // regardless of a page's `dynamic = "force-dynamic"` setting — that flag
+  // controls rendering, not the response-header routing layer. NOTE: it does
+  // NOT apply to immutable static assets (the Worker doesn't run in front of
+  // those), which is fine here — every route below is a rendered page.
+  //
+  // Cacheable (data changes ~once/day on ingest): CVE detail, package detail,
+  // insights hub + sub-pages, and the CVE/package LIST pages (home dashboard +
+  // /packages). Explicitly EXCLUDED: /:locale/search (query-dependent, must
+  // stay dynamic), API routes, and RSS feed routes.
+  async headers() {
+    return [
+      cacheableHeader(`/${LOCALE}/cve/:id*`),
+      cacheableHeader(`/${LOCALE}/package/:ecosystem/:name*`),
+      cacheableHeader(`/${LOCALE}/insights`),
+      cacheableHeader(`/${LOCALE}/insights/:path*`),
+      cacheableHeader(`/${LOCALE}/packages`),
+      // CVE list / dashboard lives at the locale root.
+      cacheableHeader(`/${LOCALE}`),
+    ];
   },
   // pg's native binding is optional; webpack tries to resolve it eagerly
   // and warns even when we never use it. Externalize it explicitly so the
@@ -78,17 +64,14 @@ const nextConfig: NextConfig = {
       config.externals = [...existing, "pg-native"];
     }
 
-    // Resolve `@pro/...` imports to either the real /pro directory
-    // (hosted build) or the OSS stub (self-host / when the private
-    // repo wasn't cloned at build time).
-    config.resolve = config.resolve ?? {};
-    config.resolve.alias = {
-      ...(config.resolve.alias ?? {}),
-      "@pro": PRO_ROOT,
-    };
-
     return config;
   },
 };
 
 export default withNextIntl(nextConfig);
+
+// Populate `getCloudflareContext().env` (the D1 `DB` binding, etc.) during
+// `next dev` so server code that reads bindings works in local development.
+// No-op in production builds.
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
+void initOpenNextCloudflareForDev();

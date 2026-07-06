@@ -1,10 +1,7 @@
 import type { MetadataRoute } from "next";
-import { headers } from "next/headers";
-import { NextRequest } from "next/server";
 import { pool } from "@/db/client";
 import { routing } from "@/i18n/routing";
 import { INSIGHT_ECOSYSTEMS } from "@/lib/insights";
-import { checkLimit } from "@/lib/rate-limit";
 
 // Always render at request time — the DB isn't available at `next build`
 // (we don't ship a DB inside the Docker image).
@@ -16,32 +13,8 @@ const SITE = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
  * Multi-language sitemap. Google's per-file URL cap is 50,000; we stay
  * well below by limiting CVE entries to the highest-signal subset (in KEV
  * or top EPSS) and capping package entries.
- *
- * Rate-limit gate sits in front of the DB work. Sitemap is a bot magnet
- * (Googlebot, Bingbot, a hundred minor crawlers); a misbehaving one used
- * to issue 5000-row package aggregations every few seconds and saturate
- * the 512 MB Postgres machine. Returning an empty sitemap on 429 costs
- * the bot a wasted fetch but spares us the DB load.
  */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  // sitemap is a Next "convention file" (default async function), not a
-  // route handler — so the withRateLimit HOF doesn't apply. We construct
-  // a synthetic NextRequest carrying the real request headers so the
-  // limiter's identity extraction (CF-Connecting-IP / Fly-Client-IP /
-  // X-Forwarded-For) works the same as everywhere else.
-  const hdrs = await headers();
-  const rl = await checkLimit(
-    new NextRequest("https://placeholder.invalid/sitemap.xml", { headers: hdrs }),
-    "sitemap",
-    { identityHint: "ip-only" },
-  );
-  if (!rl.allow) {
-    // Returning [] is structurally a valid Sitemap response — crawler
-    // sees "no entries" and goes away. Better than the alternative of
-    // serving stale or partial data while PG is melting.
-    return [];
-  }
-
   const out: MetadataRoute.Sitemap = [];
 
   // hreflang map for a given path. Tells Google /en/... and /zh/... are the

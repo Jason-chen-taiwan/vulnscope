@@ -1,0 +1,207 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# ingest.yml — Scheduled data refresh: OSV/KEV/EPSS → Cloudflare D1
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Required repo secret
+# ─────────────────────
+#   CLOUDFLARE_API_TOKEN   D1 edit scope (Workers D1:Edit permission).
+#   Add in: GitHub repo → Settings → Secrets and variables → Actions → New.
+#
+# Free-tier constraints and schedule rationale
+# ─────────────────────────────────────────────
+#   GitHub Actions free tier: 2 000 min/month for PRIVATE repos (unlimited
+#   for public).  A full 13-ecosystem OSV ingest takes 1–2 hours — running it
+#   daily would consume the entire private-repo budget.
+#
+#   Cloudflare D1 free tier: 100 000 write rows/day.  A full OSV push writes
+#   hundreds of thousands of rows, so a DAILY full push would exceed the cap.
+#
+#   Steady-state design:
+#     DAILY  (05:00 UTC)  — KEV + EPSS only.  Fast (<5 min), small writes
+#                           (~1 000–2 000 rows updated).  Keeps exploit &
+#                           severity scores current every morning.
+#     WEEKLY (04:00 UTC Sunday) — Full 13-ecosystem OSV refresh.  All vuln
+#                           data is rebuilt from source and pushed to D1.
+#
+# How KEV/EPSS-only works (INGEST_ECOSYSTEMS=" ")
+# ─────────────────────────────────────────────────
+#   build-sqlite.ts reads INGEST_ECOSYSTEMS and evaluates:
+#     const ecosystems = (process.env.INGEST_ECOSYSTEMS
+#       ? INGEST_ECOSYSTEMS.split(",").map(s=>s.trim()).filter(Boolean)
+#       : DEFAULT_ECOSYSTEMS);
+#   A single-space value " " is truthy → splits to [" "] → trim → [""] →
+#   filter(Boolean) → [].  An empty array means the OSV loop body never runs.
+#   The script then always runs ingestKev() and ingestEpss() unconditionally,
+#   so those two sources are refreshed regardless.  The resulting SQLite file
+#   contains only KEV/EPSS enrichments applied on top of an empty OSV base.
+#
+# push-to-d1.sh modes: full vs delta (and WHY it matters)
+# ─────────────────────────────────────────────────────────
+#   DELTA (PUSH_MODE=delta) — daily.  MERGES the delta SQLite onto D1's existing
+#   data; it NEVER drops tables.  vulnerabilities/packages are UPSERTed; each
+#   child table (affected/cvss_scores/vuln_aliases/refs) is replaced ONLY for the
+#   cve_ids the delta actually carries rows for — so a KEV/EPSS-only delta (which
+#   carries no child rows) leaves every existing OSV affected/cvss/ref/alias row
+#   untouched while still applying the day's KEV/EPSS updates.
+#     WHY THIS EXISTS: the old script DROPPED all base tables before every import.
+#     Because the daily build is KEV/EPSS-only (no OSV), each daily run WIPED all
+#     OSV data (the bulk of CVEs) from D1 until the weekly full refresh — the site
+#     was broken 6 days out of 7.  Delta mode fixes that data-loss bug.
+#
+#   FULL (PUSH_MODE=full) — weekly + cold seed.  DROP + recreate + import + rebuild
+#   FTS.  Correct because the weekly build contains ALL data, so a full replace
+#   loses nothing and is the simplest way to reset ids/FTS cleanly.
+#
+# First cold seed
+# ────────────────
+#   The initial full dataset is seeded MANUALLY in Phase 6 (run locally or
+#   via workflow_dispatch with ecosystems=full).  This scheduled workflow is
+#   NOT triggered on the first push — it only maintains an already-seeded D1.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Ingest → D1
+
+on:
+  # Daily lightweight refresh: KEV + EPSS only (minutes, small write footprint)
+  schedule:
+    - cron: "0 5 * * *"   # 05:00 UTC every day  → daily job
+    - cron: "0 4 * * 0"   # 04:00 UTC every Sunday → weekly full job
+
+  # Manual trigger: optionally override ecosystems (empty = KEV/EPSS only,
+  # "full" = all 13 defaults, or comma-separated list e.g. "npm,PyPI")
+  workflow_dispatch:
+    inputs:
+      ecosystems:
+        description: |
+          Ecosystems to ingest (comma-separated).
+          Leave empty for KEV+EPSS only.
+          Use "full" for all 13 default ecosystems.
+          Examples: "npm,PyPI,crates.io"
+        required: false
+        default: ""
+
+# ── Jobs ─────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ── Daily: KEV + EPSS only ─────────────────────────────────────────────────
+  refresh-kev-epss:
+    name: "Daily: KEV + EPSS refresh"
+    # Run only on the daily cron (05:00 UTC) — not on Sunday (which gets the
+    # full job below), and not on workflow_dispatch (handled by manual job).
+    if: github.event_name == 'schedule' && github.event.schedule == '0 5 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SQLite — KEV + EPSS only (no OSV ecosystems)
+        # INGEST_ECOSYSTEMS=" " (single space) → filter(Boolean) → [] →
+        # zero OSV ecosystems fetched; ingestKev + ingestEpss still run.
+        env:
+          INGEST_ECOSYSTEMS: " "
+        run: pnpm build:sqlite
+
+      - name: Push to D1 (delta — merge onto existing OSV data, never wipe)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PUSH_MODE: delta
+        run: bash scripts/push-to-d1.sh vulnscope
+
+  # ── Weekly: full 13-ecosystem OSV + KEV + EPSS ─────────────────────────────
+  refresh-full:
+    name: "Weekly: full OSV + KEV + EPSS refresh"
+    # Run on the weekly Sunday cron.
+    if: github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # 1–2 h ingest + push headroom; abort a hung run
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SQLite — full 13-ecosystem ingest
+        # No INGEST_ECOSYSTEMS override → defaults to all 13 ecosystems.
+        run: pnpm build:sqlite
+
+      - name: Push to D1 (full — DROP + rebuild; weekly build has ALL data)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PUSH_MODE: full
+        run: bash scripts/push-to-d1.sh vulnscope
+
+  # ── Manual: workflow_dispatch with optional ecosystem override ──────────────
+  refresh-manual:
+    name: "Manual: ${{ github.event.inputs.ecosystems || 'KEV+EPSS only' }}"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve ecosystems input
+        id: eco
+        # "full" → unset INGEST_ECOSYSTEMS (use default 13-list) + PUSH_MODE=full
+        #          (a full build has ALL data, so a DROP+rebuild is correct).
+        # ""     → single space (KEV+EPSS only) + PUSH_MODE=delta (never wipe OSV).
+        # other  → pass through verbatim + PUSH_MODE=delta (partial build merges,
+        #          replacing only the cve_ids it carries).
+        run: |
+          INPUT="${{ github.event.inputs.ecosystems }}"
+          if [[ "$INPUT" == "full" ]]; then
+            echo "value=" >> "$GITHUB_OUTPUT"
+            echo "push_mode=full" >> "$GITHUB_OUTPUT"
+          elif [[ -z "$INPUT" ]]; then
+            echo "value= " >> "$GITHUB_OUTPUT"
+            echo "push_mode=delta" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$INPUT" >> "$GITHUB_OUTPUT"
+            echo "push_mode=delta" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build SQLite
+        env:
+          INGEST_ECOSYSTEMS: ${{ steps.eco.outputs.value }}
+        run: pnpm build:sqlite
+
+      - name: Push to D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PUSH_MODE: ${{ steps.eco.outputs.push_mode }}
+        run: bash scripts/push-to-d1.sh vulnscope

@@ -27,3 +27,7 @@ dist/
 /.pro-compiled/
 .gstack/
 /scratch-phase0/
+
+# OpenNext Cloudflare adapter build output + wrangler local state
+.open-next/
+.wrangler/

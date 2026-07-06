@@ -8,16 +8,12 @@
     "packages": "Packages",
     "kev": "KEV",
     "critical": "Critical",
-    "jobs": "Jobs",
-    "jobsTitle": "Data refresh status",
     "searchPlaceholder": "Search CVE-ID, package, vendor, keyword…",
     "language": "Language",
-    "insights": "Insights",
-    "pricing": "Pricing"
+    "insights": "Insights"
   },
   "Footer": {
     "dataFrom": "Data from {osv}, {kev}, and {epss}.",
-    "syncStatus": "Sync status",
     "github": "GitHub"
   },
   "Home": {

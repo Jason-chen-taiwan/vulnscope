@@ -118,28 +118,6 @@ export async function markTimedOut(
   );
 }
 
-export async function getRecentSyncJobs(limit = 50) {
-  const { rows } = await pool.query(
-    `SELECT id, source, started_at, finished_at, status,
-            records_seen, records_changed, error_message
-       FROM sync_jobs
-       ORDER BY started_at DESC
-       LIMIT $1`,
-    [limit],
-  );
-  return rows;
-}
-
-export async function getLastSuccessfulRun(source: string): Promise<Date | null> {
-  const { rows } = await pool.query(
-    `SELECT finished_at FROM sync_jobs
-      WHERE source = $1 AND status = 'success'
-      ORDER BY finished_at DESC LIMIT 1`,
-    [source],
-  );
-  return rows[0]?.finished_at ?? null;
-}
-
 // Short in-memory caches for the two homepage SSR calls. These were the
 // only un-cached DB queries on /[locale]/page.tsx after ac38c88 — every
 // homepage render hit sync_jobs twice. During ingest, sync_jobs is the
@@ -158,12 +136,21 @@ export async function isIngestRunning(): Promise<boolean> {
   if (isIngestRunningCache && now - isIngestRunningCache.at < SYNC_JOBS_CACHE_TTL_MS) {
     return isIngestRunningCache.value;
   }
-  const { rows } = await pool.query(
-    `SELECT 1 FROM sync_jobs WHERE status='running' LIMIT 1`,
-  );
-  const value = rows.length > 0;
-  isIngestRunningCache = { at: now, value };
-  return value;
+  // Defensive: on a cold-start / empty D1 the sync_jobs read must never
+  // 500 the (force-dynamic) homepage. Any failure resolves to a safe
+  // "not running" default. SQL is already SQLite-compatible (no $n,
+  // no Postgres-only syntax).
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM sync_jobs WHERE status='running' LIMIT 1`,
+    );
+    const value = rows.length > 0;
+    isIngestRunningCache = { at: now, value };
+    return value;
+  } catch (err) {
+    console.error("[sync-jobs] isIngestRunning failed, defaulting to false", err);
+    return false;
+  }
 }
 
 export async function getFreshness(): Promise<{
@@ -175,12 +162,32 @@ export async function getFreshness(): Promise<{
   if (freshnessCache && now - freshnessCache.at < SYNC_JOBS_CACHE_TTL_MS) {
     return freshnessCache.value;
   }
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ON (source) source, finished_at, status
-       FROM sync_jobs
-       WHERE finished_at IS NOT NULL
-       ORDER BY source, finished_at DESC`,
-  );
-  freshnessCache = { at: now, value: rows };
-  return rows;
+  // SQLite/D1 has no `DISTINCT ON`. To reproduce Postgres's "latest
+  // finished row per source" we pick, per source, the row whose
+  // finished_at is the group MAX. GROUP BY on the non-aggregated
+  // `status` uses SQLite's bare-column rule: the value comes from the
+  // row that supplied MAX(finished_at) (SQLite documents this for a
+  // single MAX/MIN in the query), giving the same shape the homepage
+  // consumes: one { source, finished_at, status } per source.
+  //
+  // Defensive: on a cold-start / empty-or-missing sync_jobs table this
+  // must never 500 the homepage — any failure resolves to an empty list
+  // (which FreshnessLine renders as the "no data yet" state).
+  try {
+    const { rows } = await pool.query<{
+      source: string;
+      finished_at: Date | null;
+      status: string;
+    }>(
+      `SELECT source, MAX(finished_at) AS finished_at, status
+         FROM sync_jobs
+        WHERE finished_at IS NOT NULL
+        GROUP BY source`,
+    );
+    freshnessCache = { at: now, value: rows };
+    return rows;
+  } catch (err) {
+    console.error("[sync-jobs] getFreshness failed, defaulting to []", err);
+    return [];
+  }
 }

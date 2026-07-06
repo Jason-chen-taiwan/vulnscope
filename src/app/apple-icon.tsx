@@ -1,6 +1,8 @@
 import { ImageResponse } from "next/og";
 
-export const runtime = "edge";
+// No `runtime = "edge"`: OpenNext requires edge-runtime routes to be a
+// separate function, and on Cloudflare Workers everything already runs on
+// workerd. next/og's ImageResponse works in the default server bundle.
 export const size = { width: 180, height: 180 };
 export const contentType = "image/png";
 

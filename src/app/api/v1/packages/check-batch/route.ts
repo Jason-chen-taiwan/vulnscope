@@ -4,7 +4,6 @@ import pLimit from "p-limit";
 import { checkPackageVersion, type VersionCheckResult } from "@/lib/queries";
 import { normalizePypiName } from "@/lib/osv";
 import { ok, fail, corsPreflight } from "@/lib/envelope";
-import { withRateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -38,58 +37,54 @@ const BatchInputSchema = z.object({
     .max(500),
 });
 
-export const POST = withRateLimit(
-  "check_batch",
-  async (req: NextRequest) => {
-    // Body size guard. Reject before calling req.json() so we don't
-    // even read a megabyte of attacker payload into memory.
-    const contentLength = parseInt(req.headers.get("content-length") ?? "0", 10);
-    if (contentLength > MAX_BODY_BYTES) {
-      return fail(413, "REQUEST_TOO_LARGE", `request body must be ≤ ${MAX_BODY_BYTES} bytes`);
-    }
+export const POST = async (req: NextRequest) => {
+  // Body size guard. Reject before calling req.json() so we don't
+  // even read a megabyte of attacker payload into memory.
+  const contentLength = parseInt(req.headers.get("content-length") ?? "0", 10);
+  if (contentLength > MAX_BODY_BYTES) {
+    return fail(413, "REQUEST_TOO_LARGE", `request body must be ≤ ${MAX_BODY_BYTES} bytes`);
+  }
 
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return fail(400, "INVALID_JSON", "request body must be JSON");
-    }
-    const parsed = BatchInputSchema.safeParse(body);
-    if (!parsed.success) {
-      return fail(400, "INVALID_BODY", parsed.error.issues[0]?.message ?? "schema validation failed");
-    }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return fail(400, "INVALID_JSON", "request body must be JSON");
+  }
+  const parsed = BatchInputSchema.safeParse(body);
+  if (!parsed.success) {
+    return fail(400, "INVALID_BODY", parsed.error.issues[0]?.message ?? "schema validation failed");
+  }
 
-    // p-limit(10) so a 500-package request doesn't saturate the pg pool.
-    const limit = pLimit(10);
-    const results: VersionCheckResult[] = await Promise.all(
-      parsed.data.packages.map((p) =>
-        limit(async () => {
-          const normalized = p.ecosystem === "PyPI" ? normalizePypiName(p.name) : p.name;
-          const r = await checkPackageVersion(p.ecosystem, normalized, p.version);
-          if (r) return r;
-          // Unknown package — synthesize a clean response so the order is preserved.
-          return {
-            package: { ecosystem: p.ecosystem, name: p.name },
-            version: p.version,
-            is_vulnerable: false,
-            affected_by: [],
-            recommended_version: null,
-            unknown: true,
-          };
-        }),
-      ),
-    );
+  // p-limit(10) so a 500-package request doesn't saturate the pg pool.
+  const limit = pLimit(10);
+  const results: VersionCheckResult[] = await Promise.all(
+    parsed.data.packages.map((p) =>
+      limit(async () => {
+        const normalized = p.ecosystem === "PyPI" ? normalizePypiName(p.name) : p.name;
+        const r = await checkPackageVersion(p.ecosystem, normalized, p.version);
+        if (r) return r;
+        // Unknown package — synthesize a clean response so the order is preserved.
+        return {
+          package: { ecosystem: p.ecosystem, name: p.name },
+          version: p.version,
+          is_vulnerable: false,
+          affected_by: [],
+          recommended_version: null,
+          unknown: true,
+        };
+      }),
+    ),
+  );
 
-    const unknown_count = results.filter((r) => r.unknown).length;
-    const vulnerable_count = results.filter((r) => r.is_vulnerable).length;
-    return ok(results, {
-      count: results.length,
-      unknown_count,
-      vulnerable_count,
-    });
-  },
-  { identityHint: "ip-only" },
-);
+  const unknown_count = results.filter((r) => r.unknown).length;
+  const vulnerable_count = results.filter((r) => r.is_vulnerable).length;
+  return ok(results, {
+    count: results.length,
+    unknown_count,
+    vulnerable_count,
+  });
+};
 
 export async function OPTIONS() {
   return corsPreflight();
