@@ -39,6 +39,17 @@ set -euo pipefail
 # ── Resolve paths & mode ─────────────────────────────────────────────────────
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Resolve the wrangler CLI. In CI (GitHub Actions) wrangler is NOT on PATH as a
+# global — it's a project devDependency — so prefer the local install and fall
+# back to a global `wrangler` for dev machines that have it installed globally.
+if [[ -x "$ROOT/node_modules/.bin/wrangler" ]]; then
+  WRANGLER="$ROOT/node_modules/.bin/wrangler"
+elif command -v wrangler >/dev/null 2>&1; then
+  WRANGLER="wrangler"
+else
+  WRANGLER="pnpm exec wrangler"
+fi
+
 # Positional args: $1 may be the sqlite file OR (for convenience) the db name.
 # We keep the historical order [sqlite] [db] [mode] but also accept the common
 # call `push-to-d1.sh <dbname>` where the first arg is actually the db name.
@@ -111,7 +122,7 @@ PREAMBLE
 
   echo
   echo "[push-to-d1] [full 2/4] Importing base data into D1 ($D1_DATABASE) …"
-  wrangler d1 execute "$D1_DATABASE" --file="$D1_IMPORT_SQL" --remote --yes
+  $WRANGLER d1 execute "$D1_DATABASE" --file="$D1_IMPORT_SQL" --remote --yes
   echo "[push-to-d1]   → base import complete"
 
   echo
@@ -133,7 +144,7 @@ INSERT INTO packages_fts(rowid, name)
   SELECT id, name FROM packages;
 SQL
 
-  wrangler d1 execute "$D1_DATABASE" --file="$BUILD_FTS_SQL" --remote --yes
+  $WRANGLER d1 execute "$D1_DATABASE" --file="$BUILD_FTS_SQL" --remote --yes
   echo "[push-to-d1]   → FTS rebuild complete"
 }
 
@@ -326,7 +337,7 @@ SQL
 
   echo
   echo "[push-to-d1] [delta 2/3] Applying delta to D1 ($D1_DATABASE) …"
-  wrangler d1 execute "$D1_DATABASE" --file="$DELTA_SQL" --remote --yes
+  $WRANGLER d1 execute "$D1_DATABASE" --file="$DELTA_SQL" --remote --yes
   echo "[push-to-d1]   → delta applied (no tables dropped; existing data preserved)"
 }
 
@@ -342,7 +353,7 @@ echo
 echo "[push-to-d1] Verification counts …"
 for TBL in vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs vulns_fts packages_fts; do
   printf "  %-20s " "$TBL:"
-  wrangler d1 execute "$D1_DATABASE" \
+  $WRANGLER d1 execute "$D1_DATABASE" \
     --remote \
     --command="SELECT count(*) AS cnt FROM $TBL" \
     2>&1 | grep -E '"cnt"' | head -1 || echo "(query failed)"
