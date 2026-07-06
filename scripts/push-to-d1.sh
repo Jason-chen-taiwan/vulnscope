@@ -204,8 +204,8 @@ SQL
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO vulnerabilities (cve_id, source_id, summary, description, published_at, modified_at, kev, kev_added_at, epss_score, epss_percentile, epss_updated_at) VALUES ('
-  || quote(cve_id) || ',' || quote(source_id) || ',' || quote(summary) || ','
-  || quote(description) || ',' || quote(published_at) || ',' || quote(modified_at) || ','
+  || replace(quote(cve_id),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(source_id),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(summary),char(10),''''||'||char(10)||'||'''') || ','
+  || replace(quote(description),char(10),''''||'||char(10)||'||'''') || ',' || quote(published_at) || ',' || quote(modified_at) || ','
   || quote(kev) || ',' || quote(kev_added_at) || ',' || quote(epss_score) || ','
   || quote(epss_percentile) || ',' || quote(epss_updated_at)
   || ') ON CONFLICT(cve_id) DO UPDATE SET '
@@ -255,7 +255,7 @@ SQL
 SELECT
   'INSERT INTO affected (id, cve_id, package_id, ecosystem, ranges_json, versions_json, source_id) VALUES ('
   || quote(id) || ',' || quote(cve_id) || ',' || quote(package_id) || ','
-  || quote(ecosystem) || ',' || quote(ranges_json) || ',' || quote(versions_json) || ','
+  || quote(ecosystem) || ',' || replace(quote(ranges_json),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(versions_json),char(10),''''||'||char(10)||'||'''') || ','
   || quote(source_id) || ');'
 FROM affected;
 SQL
@@ -263,7 +263,7 @@ SQL
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO cvss_scores (cve_id, version, vector, base_score, severity, source) VALUES ('
-  || quote(cve_id) || ',' || quote(version) || ',' || quote(vector) || ','
+  || quote(cve_id) || ',' || quote(version) || ',' || replace(quote(vector),char(10),''''||'||char(10)||'||'''') || ','
   || quote(base_score) || ',' || quote(severity) || ',' || quote(source) || ');'
 FROM cvss_scores;
 SQL
@@ -271,14 +271,14 @@ SQL
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO vuln_aliases (cve_id, alias, source) VALUES ('
-  || quote(cve_id) || ',' || quote(alias) || ',' || quote(source) || ');'
+  || quote(cve_id) || ',' || replace(quote(alias),char(10),''''||'||char(10)||'||'''') || ',' || quote(source) || ');'
 FROM vuln_aliases;
 SQL
 
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
   'INSERT INTO refs (cve_id, url, type) VALUES ('
-  || quote(cve_id) || ',' || quote(url) || ',' || quote(type) || ');'
+  || quote(cve_id) || ',' || replace(quote(url),char(10),''''||'||char(10)||'||'''') || ',' || replace(quote(type),char(10),''''||'||char(10)||'||'''') || ');'
 FROM refs;
 SQL
 
@@ -288,7 +288,7 @@ SELECT
   'INSERT INTO sync_jobs (source, started_at, finished_at, status, records_seen, records_changed, error_message, last_heartbeat_at) VALUES ('
   || quote(source) || ',' || quote(started_at) || ',' || quote(finished_at) || ','
   || quote(status) || ',' || quote(records_seen) || ',' || quote(records_changed) || ','
-  || quote(error_message) || ',' || quote(last_heartbeat_at) || ');'
+  || replace(quote(error_message),char(10),''''||'||char(10)||'||'''') || ',' || quote(last_heartbeat_at) || ');'
 FROM sync_jobs;
 SQL
 
@@ -357,9 +357,11 @@ SQL
   echo "[push-to-d1] [delta 2/3] Applying delta to D1 ($D1_DATABASE) in batches …"
   # A single `d1 execute --file` of the whole delta can exceed D1's per-request
   # CPU limit ("D1 DB exceeded its CPU time limit and was reset") on large days.
-  # Split into ordered line-chunks and apply each separately. Each statement is
-  # one line, so splitting by lines preserves statement order (child-table
-  # DELETE-then-INSERT for a given cve_id stay in the same relative order).
+  # Split into ordered line-chunks and apply each separately. Each generated
+  # statement is exactly one physical line because embedded newlines in text
+  # columns are encoded as '||char(10)||' in the generators above, so split -l
+  # never cuts a statement mid-way (child-table DELETE-then-INSERT for a given
+  # cve_id stay in the same relative order).
   local BATCH_DIR="$WORK_DIR/delta-batches"
   mkdir -p "$BATCH_DIR"
   # 150 statements/batch: the FTS reinsert statements each scan `vulnerabilities`
