@@ -102,9 +102,10 @@ push_full() {
 
   echo
   echo "[push-to-d1] [full 1/4] Dumping base tables (DROP + recreate) …"
-  local BASE_TABLES="vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs"
+  local BASE_TABLES="vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs sync_state"
 
   cat > "$D1_IMPORT_SQL" <<'PREAMBLE'
+DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS sync_jobs;
 DROP TABLE IF EXISTS refs;
 DROP TABLE IF EXISTS vuln_aliases;
@@ -323,6 +324,23 @@ SELECT
 FROM packages;
 SQL
 
+  # ── (f) sync_state: watermark rows. MUST be emitted LAST (after all data +
+  #        FTS), so a mid-push failure cannot advance a watermark ahead of data
+  #        that never landed. create-if-not-exists then UPSERT by source. ──
+  cat >> "$DELTA_SQL" <<'DDL'
+CREATE TABLE IF NOT EXISTS sync_state (source TEXT PRIMARY KEY, last_modified TEXT, updated_at TEXT);
+DDL
+  # Only emit if the incremental SQLite actually has a sync_state table.
+  if sqlite3 "$SQLITE_FILE" "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_state';" | grep -q sync_state; then
+    sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
+SELECT
+  'INSERT INTO sync_state (source, last_modified, updated_at) VALUES ('
+  || quote(source) || ',' || quote(last_modified) || ',' || quote(updated_at)
+  || ') ON CONFLICT(source) DO UPDATE SET last_modified=excluded.last_modified, updated_at=excluded.updated_at;'
+FROM sync_state;
+SQL
+  fi
+
   # Strip anything D1 rejects (defensive — quote() output has none, but keep it).
   grep -vE "$STRIP" "$DELTA_SQL" > "$DELTA_SQL.clean" && mv "$DELTA_SQL.clean" "$DELTA_SQL"
 
@@ -383,7 +401,7 @@ fi
 # ── Verify ───────────────────────────────────────────────────────────────────
 echo
 echo "[push-to-d1] Verification counts …"
-for TBL in vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs vulns_fts packages_fts; do
+for TBL in vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs sync_state vulns_fts packages_fts; do
   printf "  %-20s " "$TBL:"
   $WRANGLER d1 execute "$D1_DATABASE" \
     --remote \
