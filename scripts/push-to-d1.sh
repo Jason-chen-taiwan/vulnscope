@@ -336,9 +336,24 @@ SQL
   fi
 
   echo
-  echo "[push-to-d1] [delta 2/3] Applying delta to D1 ($D1_DATABASE) …"
-  $WRANGLER d1 execute "$D1_DATABASE" --file="$DELTA_SQL" --remote --yes
-  echo "[push-to-d1]   → delta applied (no tables dropped; existing data preserved)"
+  echo "[push-to-d1] [delta 2/3] Applying delta to D1 ($D1_DATABASE) in batches …"
+  # A single `d1 execute --file` of the whole delta can exceed D1's per-request
+  # CPU limit ("D1 DB exceeded its CPU time limit and was reset") on large days.
+  # Split into ordered line-chunks and apply each separately. Each statement is
+  # one line, so splitting by lines preserves statement order (child-table
+  # DELETE-then-INSERT for a given cve_id stay in the same relative order).
+  local BATCH_DIR="$WORK_DIR/delta-batches"
+  mkdir -p "$BATCH_DIR"
+  # ~400 statements/batch keeps each execute well under the CPU limit.
+  split -l 400 "$DELTA_SQL" "$BATCH_DIR/batch-"
+  local TOTAL_BATCHES N=0
+  TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
+  for BATCH in "$BATCH_DIR"/batch-*; do
+    N=$((N + 1))
+    echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(grep -c ';' "$BATCH" || true) stmts)"
+    $WRANGLER d1 execute "$D1_DATABASE" --file="$BATCH" --remote --yes
+  done
+  echo "[push-to-d1]   → delta applied in $TOTAL_BATCHES batch(es) (no tables dropped; existing data preserved)"
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
