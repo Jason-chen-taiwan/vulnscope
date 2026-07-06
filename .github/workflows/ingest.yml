@@ -87,12 +87,23 @@ on:
   # "full" = all 13 defaults, or comma-separated list e.g. "npm,PyPI")
   workflow_dispatch:
     inputs:
+      incremental:
+        description: |
+          Run the INCREMENTAL OSV build (build:sqlite:incremental) instead of
+          the full/KEV-EPSS build. This is the same path the daily cron runs:
+          it ingests only OSV records changed since each ecosystem's D1
+          watermark, plus KEV/EPSS, and delta-pushes. Use this to test or run
+          the incremental mechanism on demand.
+        type: boolean
+        required: false
+        default: false
       ecosystems:
         description: |
           Ecosystems to ingest (comma-separated).
-          Leave empty for KEV+EPSS only.
-          Use "full" for all 13 default ecosystems.
-          Examples: "npm,PyPI,crates.io"
+          For incremental=true: limit to these ecosystems (empty = all 13).
+            e.g. "npm" for a small, safe first run.
+          For incremental=false: empty = KEV+EPSS only; "full" = all 13
+            default ecosystems; or a comma list (partial full build).
         required: false
         default: ""
 
@@ -150,7 +161,7 @@ jobs:
 
   # ── Manual: workflow_dispatch with optional ecosystem override ──────────────
   refresh-manual:
-    name: "Manual: ${{ github.event.inputs.ecosystems || 'KEV+EPSS only' }}"
+    name: "Manual: ${{ github.event.inputs.incremental == 'true' && 'incremental OSV' || (github.event.inputs.ecosystems || 'KEV+EPSS only') }}"
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -170,8 +181,30 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # ── Incremental path (incremental=true): same as the daily cron. Ingests
+      #    only OSV records changed since each ecosystem's watermark + KEV/EPSS,
+      #    then delta-pushes. `ecosystems` optionally limits which ecosystems
+      #    (empty = all 13). Use e.g. ecosystems="npm" for a small first run. ──
+      - name: Build SQLite — incremental OSV + KEV + EPSS
+        if: github.event.inputs.incremental == 'true'
+        env:
+          SQLITE_OUT: scratch-phase0/vulnscope-incremental.sqlite
+          # Empty → build:sqlite:incremental defaults to all 13 ecosystems.
+          INGEST_ECOSYSTEMS: ${{ github.event.inputs.ecosystems }}
+        run: pnpm build:sqlite:incremental
+
+      - name: Push to D1 (incremental delta)
+        if: github.event.inputs.incremental == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PUSH_MODE: delta
+        run: bash scripts/push-to-d1.sh scratch-phase0/vulnscope-incremental.sqlite vulnscope delta
+
+      # ── Non-incremental path (incremental=false): the legacy full / KEV-EPSS
+      #    build, kept for on-demand full OSV rebuilds. ──
       - name: Resolve ecosystems input
         id: eco
+        if: github.event.inputs.incremental != 'true'
         # "full" → unset INGEST_ECOSYSTEMS (use default 13-list) + PUSH_MODE=full
         #          (a full build has ALL data, so a DROP+rebuild is correct).
         # ""     → single space (KEV+EPSS only) + PUSH_MODE=delta (never wipe OSV).
@@ -191,11 +224,13 @@ jobs:
           fi
 
       - name: Build SQLite
+        if: github.event.inputs.incremental != 'true'
         env:
           INGEST_ECOSYSTEMS: ${{ steps.eco.outputs.value }}
         run: pnpm build:sqlite
 
       - name: Push to D1
+        if: github.event.inputs.incremental != 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PUSH_MODE: ${{ steps.eco.outputs.push_mode }}
