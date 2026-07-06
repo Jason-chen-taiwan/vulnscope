@@ -328,13 +328,18 @@ SELECT
 FROM vulnerabilities;
 SQL
 
-  # packages_fts: index only packages not already indexed (new rows). Delta
-  # package ids are stable, so a NOT IN guard avoids duplicate FTS entries and
-  # avoids re-reading the whole corpus.
+  # packages_fts: index new packages by their D1-resolved rowid. The rowid MUST
+  # equal D1's packages.id (queries do `p.id IN (SELECT rowid FROM packages_fts
+  # MATCH ?)`). The incremental build's local packages.id does NOT match D1's id
+  # (Fix A lets D1 assign its own id by natural key), so resolve the rowid via a
+  # subquery on (ecosystem, name) — same natural-key pattern as the affected fix.
+  # The NOT EXISTS guard (keyed on that resolved rowid) avoids duplicate FTS rows.
   sqlite3 "$SQLITE_FILE" <<'SQL' >> "$DELTA_SQL"
 SELECT
-  'INSERT INTO packages_fts (rowid, name) SELECT ' || quote(id) || ',' || quote(name)
-  || ' WHERE NOT EXISTS (SELECT 1 FROM packages_fts WHERE rowid=' || quote(id) || ');'
+  'INSERT INTO packages_fts (rowid, name) SELECT (SELECT id FROM packages WHERE ecosystem='
+  || quote(ecosystem) || ' AND name=' || quote(name) || '), ' || quote(name)
+  || ' WHERE NOT EXISTS (SELECT 1 FROM packages_fts WHERE rowid=(SELECT id FROM packages WHERE ecosystem='
+  || quote(ecosystem) || ' AND name=' || quote(name) || '));'
   || char(10) || '--@@STMT@@'
 FROM packages;
 SQL
