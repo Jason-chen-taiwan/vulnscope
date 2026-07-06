@@ -36,9 +36,10 @@ describe("parseModifiedCsv", () => {
     expect(newWatermark).toBeNull();
   });
 
-  it("returns empty set when every row is <= watermark", () => {
-    const { changedIds } = parseModifiedCsv(CSV, "2026-07-05T23:00:00.000Z");
+  it("returns empty set when every row is <= watermark, but still sets newWatermark from the newest line", () => {
+    const { changedIds, newWatermark } = parseModifiedCsv(CSV, "2026-07-05T23:00:00.000Z");
     expect(changedIds.size).toBe(0);
+    expect(newWatermark).toBe("2026-07-05T23:00:00.000Z");
   });
 
   it("builds the per-ecosystem URL", () => {
@@ -46,5 +47,9 @@ describe("parseModifiedCsv", () => {
       "https://osv-vulnerabilities.storage.googleapis.com/npm/modified_id.csv",
     );
     expect(MODIFIED_CSV_URL("crates.io")).toContain("/crates.io/modified_id.csv");
+    // A space must be percent-encoded (proves encodeURIComponent is applied).
+    expect(MODIFIED_CSV_URL("Go Modules")).toBe(
+      "https://osv-vulnerabilities.storage.googleapis.com/Go%20Modules/modified_id.csv",
+    );
   });
 });
