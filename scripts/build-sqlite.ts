@@ -99,18 +99,18 @@ export function buildSchema(db: Database.Database): void {
 // ecosystems are fetched. Defaults to the full production list. For a fast
 // smoke test:  INGEST_ECOSYSTEMS=Hex pnpm build:sqlite
 
-const OSV_BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
+export const OSV_BASE_URL = "https://osv-vulnerabilities.storage.googleapis.com";
 
-const DEFAULT_ECOSYSTEMS = [
+export const DEFAULT_ECOSYSTEMS = [
   "npm", "PyPI", "Maven", "Go", "RubyGems", "Packagist", "crates.io",
   "NuGet", "Hex", "Hackage", "Debian", "Alpine", "Bitnami",
 ];
 
-function canonicalizeEco(input: string): string {
+export function canonicalizeEco(input: string): string {
   return input.split(":")[0];
 }
 
-function classifyAlias(alias: string): string {
+export function classifyAlias(alias: string): string {
   const a = alias.toUpperCase();
   if (a.startsWith("GHSA-")) return "ghsa";
   if (a.startsWith("DSA-")) return "dsa";
@@ -165,7 +165,7 @@ async function ingestOsvEcosystem(sink: SqliteIngestSink, ecoArg: string) {
   }
 }
 
-async function ingestKev(db: Database.Database) {
+export async function ingestKev(db: Database.Database) {
   console.log("[kev] fetching CISA KEV catalog");
   const payload = await fetchKev();
   // Upsert onto vulnerabilities: flip kev=1 and fill kev_added_at /
@@ -196,7 +196,7 @@ async function ingestKev(db: Database.Database) {
   console.log(`[kev] catalogVersion=${payload.catalogVersion} upserted=${payload.vulnerabilities.length}`);
 }
 
-async function ingestEpss(db: Database.Database) {
+export async function ingestEpss(db: Database.Database) {
   console.log("[epss] fetching EPSS scores");
   const update = db.prepare(
     `UPDATE vulnerabilities
