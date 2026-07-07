@@ -116,9 +116,10 @@ function sqlQuote(id: string): string {
  * Results accumulate in _stats_scratch, then one INSERT OR REPLACE.
  */
 function pageStatsRecountSql(o: Required<StatsSqlOptions>): string[] {
+  // ponytail: _stats_scratch uses PRIMARY KEY so INSERT OR REPLACE is idempotent on retry
   const stmts: string[] = [
     `DROP TABLE IF EXISTS _stats_scratch`,
-    `CREATE TABLE _stats_scratch (k TEXT NOT NULL, v INTEGER NOT NULL)`,
+    `CREATE TABLE _stats_scratch (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`,
   ];
   const yearRanges: Array<[string, string | null]> = [];
   yearRanges.push(["", `CVE-${o.yearStart}-`]); // under-range catch-all
@@ -127,35 +128,37 @@ function pageStatsRecountSql(o: Required<StatsSqlOptions>): string[] {
   }
   yearRanges.push([`CVE-${o.yearEndExclusive}-`, null]); // open-ended tail
 
+  // Keys: 'vuln:<lo-or-under>' and 'crit:<lo-or-under>' — unique per chunk
   for (const [lo, hi] of yearRanges) {
     const bounds = [
       lo ? `cve_id >= ${sqlQuote(lo)}` : null,
       hi ? `cve_id < ${sqlQuote(hi)}` : null,
     ].filter(Boolean).join(" AND ");
+    const chunkKey = lo || "under";
     stmts.push(
-      `INSERT INTO _stats_scratch (k, v) VALUES ('vuln',
+      `INSERT OR REPLACE INTO _stats_scratch (k, v) VALUES ('vuln:${chunkKey}',
   (SELECT COUNT(*) FROM vulnerabilities WHERE ${bounds}))`,
-      `INSERT INTO _stats_scratch (k, v) VALUES ('crit',
+      `INSERT OR REPLACE INTO _stats_scratch (k, v) VALUES ('crit:${chunkKey}',
   (SELECT COUNT(*) FROM cvss_scores WHERE ${bounds} AND severity = 'CRITICAL'))`,
     );
   }
   for (let lo = 0; lo < o.pkgIdMax; lo += o.pkgIdStep) {
     stmts.push(
-      `INSERT INTO _stats_scratch (k, v) VALUES ('pkg',
+      `INSERT OR REPLACE INTO _stats_scratch (k, v) VALUES ('pkg:${lo}',
   (SELECT COUNT(*) FROM packages WHERE id >= ${lo} AND id < ${lo + o.pkgIdStep}))`,
     );
   }
   stmts.push(
-    `INSERT INTO _stats_scratch (k, v) VALUES ('pkg',
+    `INSERT OR REPLACE INTO _stats_scratch (k, v) VALUES ('pkg:${o.pkgIdMax}',
   (SELECT COUNT(*) FROM packages WHERE id >= ${o.pkgIdMax}))`,
-    `INSERT INTO _stats_scratch (k, v) VALUES ('kev',
+    `INSERT OR REPLACE INTO _stats_scratch (k, v) VALUES ('kev',
   (SELECT COUNT(*) FROM vulnerabilities WHERE kev = 1))`,
     `INSERT OR REPLACE INTO page_stats
   (id, vuln_total, package_total, critical_total, kev_total, computed_at)
 SELECT 1,
-  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'vuln'),
-  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'pkg'),
-  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'crit'),
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k LIKE 'vuln:%'),
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k LIKE 'pkg:%'),
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k LIKE 'crit:%'),
   (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'kev'),
   datetime('now')`,
     `DROP TABLE _stats_scratch`,
@@ -171,7 +174,9 @@ SELECT 1,
 export function deltaStatsSql(cveIds: string[], opts?: StatsSqlOptions): string[] {
   if (cveIds.length === 0) return [];
   const o = resolveOpts(opts);
+  // ponytail: statsDdl() first so delta works even on a D1 missing the stats tables (IF NOT EXISTS = idempotent)
   const stmts: string[] = [
+    ...statsDdl(),
     `DROP TABLE IF EXISTS _delta_cves`,
     `CREATE TABLE _delta_cves (cve_id TEXT PRIMARY KEY)`,
   ];
@@ -195,7 +200,8 @@ SELECT DISTINCT package_id FROM affected
     stmts.push(
       `DELETE FROM package_stats WHERE package_id IN
   (SELECT package_id FROM _touched_pkgs WHERE package_id % ${o.recomputeShards} = ${k})`,
-      `INSERT INTO package_stats (package_id, ecosystem, name, cve_count, kev_count, max_epss)
+      // ponytail: OR REPLACE so a retried batch can't PK-conflict if DELETE/INSERT split across batch boundary
+      `INSERT OR REPLACE INTO package_stats (package_id, ecosystem, name, cve_count, kev_count, max_epss)
 ${PACKAGE_STATS_SELECT}
   FROM _touched_pkgs t
   JOIN packages p ON p.id = t.package_id
@@ -226,7 +232,8 @@ export function rebuildAllStatsSql(opts?: StatsSqlOptions): string[] {
     const delBound = hi === null ? `package_id >= ${lo}` : `package_id >= ${lo} AND package_id < ${hi}`;
     stmts.push(
       `DELETE FROM package_stats WHERE ${delBound}`,
-      `INSERT INTO package_stats (package_id, ecosystem, name, cve_count, kev_count, max_epss)
+      // ponytail: OR REPLACE guards against PK conflict on batch retry
+      `INSERT OR REPLACE INTO package_stats (package_id, ecosystem, name, cve_count, kev_count, max_epss)
 ${PACKAGE_STATS_SELECT}
   FROM packages p
   JOIN affected a ON a.package_id = p.id

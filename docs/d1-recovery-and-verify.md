@@ -92,7 +92,7 @@ npm 成功後，重跑 workflow，`ecosystems` 依序放大：
    —— 全部是分片小語句;失敗可安全重跑。
 3. **部署新查詢層**:`pnpm deploy`
    (含 KV incremental cache;需先確認 wrangler.jsonc 的 NEXT_INC_CACHE_KV id 已填。)
-   若先部署才跑 stats-rebuild,首頁統計會顯示 0(fallback),跑完 stats-rebuild 即恢復 —— 所以順序是先 stats-rebuild 再 deploy。
+   若先部署才跑 stats-rebuild,首頁、套件、insights 頁面會直接噴錯(no such table),不是顯示 0 —— 必須先跑 stats-rebuild 再 deploy。
 4. **驗證**:首頁/zh 首頁秒開;`SELECT * FROM page_stats WHERE id=1` 單列有值;
    `/packages`、`/insights/*` 正常。
 5. **之後**再跑增量 CI 驗證(原 Step 3/4)—— 每日 delta 會自動帶 stats 刷新。

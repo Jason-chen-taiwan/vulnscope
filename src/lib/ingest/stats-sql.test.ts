@@ -137,6 +137,68 @@ describe("deltaStatsSql", () => {
       }
     }
   });
+
+  it("is retry-idempotent: re-applying the same statement list yields identical results", () => {
+    const db = freshDb();
+    db.exec(`
+      UPDATE vulnerabilities SET kev = 0 WHERE cve_id = 'CVE-2021-1001';
+      INSERT INTO vulnerabilities (cve_id, kev, epss_score) VALUES ('CVE-2025-3001', 0, 0.2);
+      INSERT INTO affected (cve_id, package_id, ecosystem) VALUES ('CVE-2025-3001', 1, 'npm');
+    `);
+    const stmts = deltaStatsSql(["CVE-2021-1001", "CVE-2025-3001"], TEST_OPTS);
+    execAll(db, stmts); // first application
+    execAll(db, stmts); // full re-apply (simulates batch retry)
+
+    const page = db.prepare(`SELECT * FROM page_stats WHERE id = 1`).get() as Record<string, unknown>;
+    expect(page.vuln_total).toBe(4);
+    expect(page.kev_total).toBe(0);
+    expect(page.package_total).toBe(2);
+    const pkg1 = db.prepare(`SELECT * FROM package_stats WHERE package_id = 1`).get() as Record<string, unknown>;
+    expect(pkg1.cve_count).toBe(3);
+    expect((db.prepare(`SELECT COUNT(*) AS c FROM package_stats`).get() as { c: number }).c).toBe(2);
+  });
+
+  it("partial-then-full replay: executing first half then full list yields correct results", () => {
+    const db = freshDb();
+    db.exec(`
+      INSERT INTO vulnerabilities (cve_id, kev, epss_score) VALUES ('CVE-2025-3001', 0, 0.2);
+      INSERT INTO affected (cve_id, package_id, ecosystem) VALUES ('CVE-2025-3001', 1, 'npm');
+    `);
+    const stmts = deltaStatsSql(["CVE-2025-3001"], TEST_OPTS);
+    const half = Math.floor(stmts.length / 2);
+    execAll(db, stmts.slice(0, half)); // partial application
+    execAll(db, stmts);                // full re-apply from start (real retry shape)
+
+    const page = db.prepare(`SELECT * FROM page_stats WHERE id = 1`).get() as Record<string, unknown>;
+    expect(page.vuln_total).toBe(4);
+    expect(page.package_total).toBe(2);
+    const pkg1 = db.prepare(`SELECT * FROM package_stats WHERE package_id = 1`).get() as Record<string, unknown>;
+    expect(pkg1.cve_count).toBe(3);
+  });
+
+  it("starts with the statsDdl CREATE TABLE IF NOT EXISTS page_stats statement", () => {
+    const stmts = deltaStatsSql(["CVE-2021-1001"], TEST_OPTS);
+    expect(stmts[0]).toContain("CREATE TABLE IF NOT EXISTS page_stats");
+  });
+
+  it("succeeds and yields correct page_stats when stats tables are absent before run", () => {
+    const db = new Database(":memory:");
+    buildSchema(db);
+    seedFixture(db);
+    // Drop stats tables to simulate D1 missing them (they're added by buildSchema in query-optimization)
+    db.exec(`DROP TABLE IF EXISTS package_stats`);
+    db.exec(`DROP TABLE IF EXISTS page_stats`);
+    // Also drop indexes that reference package_stats
+    db.exec(`DROP INDEX IF EXISTS idx_pkgstats_eco_rank`);
+    db.exec(`DROP INDEX IF EXISTS idx_pkgstats_rank`);
+
+    execAll(db, deltaStatsSql(["CVE-2021-1001"], TEST_OPTS));
+
+    const page = db.prepare(`SELECT * FROM page_stats WHERE id = 1`).get() as Record<string, unknown>;
+    expect(page.vuln_total).toBe(3);
+    expect(page.package_total).toBe(2);
+    expect(page.kev_total).toBe(1);
+  });
 });
 
 describe("rebuildAllStatsSql", () => {
@@ -160,5 +222,33 @@ describe("rebuildAllStatsSql", () => {
   it("starts with the DDL so it works on a database missing the tables", () => {
     const stmts = rebuildAllStatsSql(TEST_OPTS);
     expect(stmts[0]).toContain("CREATE TABLE IF NOT EXISTS page_stats");
+  });
+
+  it("is retry-idempotent: re-applying the same statement list yields identical results", () => {
+    const db = new Database(":memory:");
+    buildSchema(db);
+    seedFixture(db);
+    const stmts = rebuildAllStatsSql(TEST_OPTS);
+    execAll(db, stmts); // first run
+    execAll(db, stmts); // full re-apply (simulates batch retry)
+
+    expect((db.prepare(`SELECT COUNT(*) AS c FROM package_stats`).get() as { c: number }).c).toBe(2);
+    const page = db.prepare(`SELECT * FROM page_stats WHERE id = 1`).get() as Record<string, unknown>;
+    expect(page.vuln_total).toBe(3);
+    expect(page.critical_total).toBe(1);
+    expect(page.kev_total).toBe(1);
+    expect(page.package_total).toBe(2);
+  });
+
+  it("never emits an unbounded scan of a big table", () => {
+    const stmts = rebuildAllStatsSql(TEST_OPTS);
+    for (const s of stmts) {
+      if (/FROM (vulnerabilities|cvss_scores)\b/.test(s) && !/JOIN/.test(s)) {
+        expect(
+          /cve_id >=|cve_id </.test(s) || /WHERE kev = 1/.test(s),
+          `unbounded statement: ${s}`,
+        ).toBe(true);
+      }
+    }
   });
 });
