@@ -266,6 +266,7 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
     if (t.rows.length > 0) {
       total = t.rows[0].vuln_total;
     } else {
+      // params is [] here — the unfiltered fallback has no positional bindings.
       const totalRes = await pool.query<{ c: number }>(
         `SELECT COUNT(*) AS c ${baseFrom}`,
         params,
@@ -319,62 +320,6 @@ export interface PackageBundle {
   }>;
 }
 
-/**
- * 60s in-memory cache for getPackageWithCves.
- *
- * Justification: `/package/[eco]/[name]` is force-dynamic so every
- * request re-runs the full bundle query. Most popular packages
- * (Debian/chromium, Maven/log4j-core, ...) have 100-800 CVEs and
- * the LATERAL CVSS join + ranges_json/versions_json columns make
- * each row chunky. Hit rate is per (ecosystem, name) so it depends
- * on whether the same page gets multiple views in 60s — heavy
- * social-share or crawler traffic benefits the most.
- *
- * Eviction (no lru-cache dep): sweep-then-clear. On insert, first
- * remove expired entries; if size still > MAX_ENTRIES, clear the
- * whole Map (worst case one cache-miss storm, recovers in 60s).
- * Strict LRU isn't worth the dep here.
- *
- * Cache key includes the limit so a 100-row render and an
- * unlimited "show all" fetch don't collide.
- */
-const PACKAGE_BUNDLE_CACHE = new Map<
-  string,
-  { at: number; value: PackageBundle | null }
->();
-const PACKAGE_BUNDLE_TTL_MS = 60_000;
-const PACKAGE_BUNDLE_MAX_ENTRIES = 200;
-
-function bundleCacheKey(
-  ecosystem: string,
-  name: string,
-  limit: number | undefined,
-): string {
-  return `${ecosystem}/${name}#${limit ?? "all"}`;
-}
-
-function bundleCacheGet(key: string): PackageBundle | null | undefined {
-  const hit = PACKAGE_BUNDLE_CACHE.get(key);
-  if (!hit) return undefined;
-  if (Date.now() - hit.at >= PACKAGE_BUNDLE_TTL_MS) {
-    PACKAGE_BUNDLE_CACHE.delete(key);
-    return undefined;
-  }
-  return hit.value;
-}
-
-function bundleCacheSet(key: string, value: PackageBundle | null): void {
-  // Lazy sweep: clear expired before adding. Cheap when cache is
-  // small; bounded by MAX_ENTRIES.
-  const now = Date.now();
-  for (const [k, v] of PACKAGE_BUNDLE_CACHE) {
-    if (now - v.at >= PACKAGE_BUNDLE_TTL_MS) PACKAGE_BUNDLE_CACHE.delete(k);
-  }
-  if (PACKAGE_BUNDLE_CACHE.size >= PACKAGE_BUNDLE_MAX_ENTRIES) {
-    PACKAGE_BUNDLE_CACHE.clear();
-  }
-  PACKAGE_BUNDLE_CACHE.set(key, { at: now, value });
-}
 
 export interface PackageMetadata {
   package: { id: number; ecosystem: string; name: string };
@@ -403,23 +348,16 @@ export async function getPackageMetadata(
   return { package: pkg, cve_count: cntRows[0]?.cve_count ?? 0 };
 }
 
-export async function getPackageWithCves(
+async function _getPackageWithCves(
   ecosystem: string,
   name: string,
   limit?: number,
 ): Promise<PackageBundle | null> {
-  const cacheKey = bundleCacheKey(ecosystem, name, limit);
-  const cached = bundleCacheGet(cacheKey);
-  if (cached !== undefined) return cached;
-
   const { rows: pkgRows } = await pool.query<PackageBundle["package"]>(
     `SELECT id, ecosystem, name FROM packages WHERE ecosystem = ? AND name = ?`,
     [ecosystem, name],
   );
-  if (pkgRows.length === 0) {
-    bundleCacheSet(cacheKey, null);
-    return null;
-  }
+  if (pkgRows.length === 0) return null;
   const pkg = pkgRows[0];
 
   // The D1 schema has no `exploits` table (Postgres-only enrichment), so
@@ -459,10 +397,25 @@ export async function getPackageWithCves(
     ranges_json: parseJsonColumn<OsvRange[]>(c.ranges_json) ?? [],
     versions_json: parseJsonColumn<string[]>(c.versions_json),
   }));
-  const bundle: PackageBundle = { package: pkg, cves };
-  bundleCacheSet(cacheKey, bundle);
-  return bundle;
+  return { package: pkg, cves };
 }
+
+/**
+ * 60s KV-backed cache: /package/[eco]/[name] is force-dynamic and popular
+ * packages (Debian/chromium, Maven/log4j-core …) carry 100-800 chunky CVE
+ * rows. Key includes the limit so a 100-row render and an unlimited
+ * "show all" fetch don't collide.
+ */
+export const getPackageWithCves = (
+  ecosystem: string,
+  name: string,
+  limit?: number,
+): Promise<PackageBundle | null> =>
+  unstable_cache(
+    _getPackageWithCves,
+    ["getPackageWithCves", ecosystem, name, String(limit ?? "all")],
+    { revalidate: SSR_CACHE_TTL_SEC },
+  )(ecosystem, name, limit);
 
 export interface VersionCheckResult {
   package: { ecosystem: string; name: string };
@@ -530,26 +483,20 @@ export interface DashboardStats {
   vuln_total: number;
 }
 
-// 60s in-memory cache. The totals are precomputed in page_stats so the
-// query is cheap, but the homepage calls this on every render — the cache
-// still saves a D1 round-trip per view. Replaced by unstable_cache in the
-// KV-cache task.
-let dashboardStatsCache: { at: number; value: DashboardStats } | null = null;
-const DASHBOARD_STATS_TTL_MS = 60_000;
-
-export async function getDashboardStats(): Promise<DashboardStats> {
-  const now = Date.now();
-  if (dashboardStatsCache && now - dashboardStatsCache.at < DASHBOARD_STATS_TTL_MS) {
-    return dashboardStatsCache.value;
-  }
-  // Totals come from page_stats (precomputed at ingest — COUNT(*) over the
-  // 74k-row table overloaded D1, 2026-07-06). new_today/new_week stay live:
-  // cheap idx_vuln_published range scans, and inherently now-relative.
+async function _getDashboardStats(): Promise<DashboardStats> {
+  // Totals from page_stats (precomputed at ingest); live windows are cheap
+  // idx_vuln_published range scans. Cached via unstable_cache (KV-backed on
+  // Workers — see open-next.config.ts), shared across isolates.
   const { rows } = await pool.query<DashboardStats>(DASHBOARD_STATS_SQL);
-  const value = rows[0]; // LEFT JOIN from inline 1-row table ⇒ always 1 row
-  dashboardStatsCache = { at: now, value };
+  const value = rows[0];
+  if (!value) throw new Error("DASHBOARD_STATS_SQL returned 0 rows");
   return value;
 }
+export const getDashboardStats = unstable_cache(
+  _getDashboardStats,
+  ["getDashboardStats"],
+  { revalidate: SSR_CACHE_TTL_SEC },
+);
 
 async function _getRecentKev(limit: number) {
   const { rows } = await pool.query(

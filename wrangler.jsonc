@@ -17,5 +17,14 @@
       "database_name": "vulnscope",
       "database_id": "9cdd7df2-6e0e-4586-a3e8-bc5dc7736f78"
     }
+  ],
+  "kv_namespaces": [
+    {
+      // @opennextjs/cloudflare incremental cache — makes unstable_cache a
+      // real cross-isolate cache (per-isolate memory was effectively always
+      // cold on Workers, exposing every heavy query to every request).
+      "binding": "NEXT_INC_CACHE_KV",
+      "id": "fce4ad43539b4af8b02ab39f1680cb0a"
+    }
   ]
 }

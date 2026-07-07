@@ -50,6 +50,12 @@ const nextConfig: NextConfig = {
       cacheableHeader(`/${LOCALE}/packages`),
       // CVE list / dashboard lives at the locale root.
       cacheableHeader(`/${LOCALE}`),
+      {
+        source: "/sitemap.xml",
+        headers: [
+          { key: "Cache-Control", value: "public, s-maxage=3600, stale-while-revalidate=86400" },
+        ],
+      },
     ];
   },
   // pg's native binding is optional; webpack tries to resolve it eagerly
