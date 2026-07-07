@@ -39,7 +39,7 @@ the sync_state watermarks:
 
 One-time backfill / disaster recovery:
 
-    bash scripts/push-to-d1.sh vulnscope stats-rebuild
+    PUSH_MODE=stats-rebuild bash scripts/push-to-d1.sh vulnscope
 
 creates the tables (IF NOT EXISTS) and rebuilds both from scratch in
 bounded shards. Safe to re-run; touches no other tables.

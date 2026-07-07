@@ -77,7 +77,7 @@ npm 成功後，重跑 workflow，`ecosystems` 依序放大：
 - 增量 OSV ingest 功能完整實作並合併進 main（14 commits）
 - 手動觸發增量的選項（`incremental` input）已加入 workflow
 - 所有程式在 throwaway D1 上驗證通過（C1 id 碰撞、C2 FTS rowid、sentinel 分批都修好且驗證）
-- 231 測試 + tsc 綠
+- 252 測試 + tsc 綠
 
 **尚未驗證的唯一一件事**：增量 delta 推**正式（大）D1** 是否順利 —— 卡在 D1 目前不穩。
 這張卡就是為了完成這最後一哩。
@@ -88,10 +88,11 @@ npm 成功後，重跑 workflow，`ecosystems` 依序放大：
 
 1. **確認 D1 穩定**(Step 2 的輕量查詢連續 3 次通過)。
 2. **建立 stats 表並回填**(增量遷移,不動其他表、不重灌):
-   `bash scripts/push-to-d1.sh vulnscope stats-rebuild`
+   `PUSH_MODE=stats-rebuild bash scripts/push-to-d1.sh vulnscope`
    —— 全部是分片小語句;失敗可安全重跑。
 3. **部署新查詢層**:`pnpm deploy`
    (含 KV incremental cache;需先確認 wrangler.jsonc 的 NEXT_INC_CACHE_KV id 已填。)
+   若先部署才跑 stats-rebuild,首頁統計會顯示 0(fallback),跑完 stats-rebuild 即恢復 —— 所以順序是先 stats-rebuild 再 deploy。
 4. **驗證**:首頁/zh 首頁秒開;`SELECT * FROM page_stats WHERE id=1` 單列有值;
    `/packages`、`/insights/*` 正常。
 5. **之後**再跑增量 CI 驗證(原 Step 3/4)—— 每日 delta 會自動帶 stats 刷新。
