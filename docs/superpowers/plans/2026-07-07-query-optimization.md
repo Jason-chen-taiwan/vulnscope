@@ -1501,7 +1501,7 @@ the sync_state watermarks:
 
 One-time backfill / disaster recovery:
 
-    bash scripts/push-to-d1.sh vulnscope stats-rebuild
+    PUSH_MODE=stats-rebuild bash scripts/push-to-d1.sh vulnscope
 
 creates the tables (IF NOT EXISTS) and rebuilds both from scratch in
 bounded shards. Safe to re-run; touches no other tables.
@@ -1516,7 +1516,7 @@ In `docs/d1-recovery-and-verify.md`, replace the "Step 3/Step 4" CI-verification
 
 1. **確認 D1 穩定**(Step 2 的輕量查詢連續 3 次通過)。
 2. **建立 stats 表並回填**(增量遷移,不動其他表、不重灌):
-   `bash scripts/push-to-d1.sh vulnscope stats-rebuild`
+   `PUSH_MODE=stats-rebuild bash scripts/push-to-d1.sh vulnscope`
    —— 全部是分片小語句;失敗可安全重跑。
 3. **部署新查詢層**:`pnpm deploy`
    (含 KV incremental cache;需先確認 wrangler.jsonc 的 NEXT_INC_CACHE_KV id 已填。)
