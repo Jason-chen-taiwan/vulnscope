@@ -1,14 +1,15 @@
 import "server-only";
 import { unstable_cache } from "next/cache";
 import { pool } from "@/db/client";
+import { TOP_PACKAGES_ALL_SQL, ECOSYSTEM_DEEP_DIVE_SQL } from "./stats-read-sql";
 
 const SSR_CACHE_TTL_SEC = 60;
 
 /**
  * Aggregation queries for the /insights/* pages. Each returns a result
- * shape ready for table rendering. All are cheap enough to run on each
- * request given our current scale (~75k vulns); when we cross a few
- * hundred thousand we should switch to materialized views.
+ * shape ready for table rendering. All read the ingest-precomputed
+ * `package_stats` table — request-path aggregation over `affected`
+ * overloaded D1 (2026-07-06).
  */
 
 export interface TopPackageRow {
@@ -20,28 +21,9 @@ export interface TopPackageRow {
 }
 
 async function _getTopPackagesAllEcos(limit: number): Promise<TopPackageRow[]> {
-  // Pre-aggregate from affected first (driven by idx_affected_pkg / its
-  // composite siblings), then JOIN packages by PK. Previously this drove
-  // from packages and forced a full scan of affected + vulnerabilities
-  // joins per package — observed RED in the query audit.
-  const { rows } = await pool.query(
-    `WITH agg AS (
-       SELECT a.package_id,
-              COUNT(DISTINCT a.cve_id) AS cve_count,
-              COUNT(DISTINCT CASE WHEN v.kev = 1 THEN a.cve_id END) AS kev_count,
-              CAST(MAX(v.epss_score) AS REAL) AS max_epss
-         FROM affected a
-         JOIN vulnerabilities v ON v.cve_id = a.cve_id
-        GROUP BY a.package_id
-     )
-     SELECT p.ecosystem, p.name,
-            agg.cve_count, agg.kev_count, agg.max_epss
-       FROM agg
-       JOIN packages p ON p.id = agg.package_id
-      ORDER BY agg.kev_count DESC, agg.cve_count DESC
-      LIMIT ?`,
-    [limit],
-  );
+  // Ingest-precomputed ranking (package_stats, idx_pkgstats_rank). The old
+  // query aggregated all 119k affected rows on every view.
+  const { rows } = await pool.query(TOP_PACKAGES_ALL_SQL, [limit]);
   return rows as TopPackageRow[];
 }
 export const getTopPackagesAllEcos = (limit = 100): Promise<TopPackageRow[]> =>
@@ -91,26 +73,8 @@ export const getEpssRising = (limit = 100) =>
   })(limit);
 
 async function _getEcosystemDeepDive(ecosystem: string, limit: number) {
-  // Drive from affected via idx_affected_eco_pkg (ecosystem, package_id)
-  // INCLUDE (cve_id) — same trick that took getTopPackages from 21s to 55ms.
-  const { rows } = await pool.query(
-    `WITH agg AS (
-       SELECT a.package_id,
-              COUNT(DISTINCT a.cve_id) AS cve_count,
-              COUNT(DISTINCT CASE WHEN v.kev = 1 THEN a.cve_id END) AS kev_count,
-              CAST(MAX(v.epss_score) AS REAL) AS max_epss
-         FROM affected a
-         JOIN vulnerabilities v ON v.cve_id = a.cve_id
-        WHERE a.ecosystem = ?
-        GROUP BY a.package_id
-     )
-     SELECT p.name, agg.cve_count, agg.kev_count, agg.max_epss
-       FROM agg
-       JOIN packages p ON p.id = agg.package_id
-      ORDER BY agg.kev_count DESC, agg.cve_count DESC
-      LIMIT ?`,
-    [ecosystem, limit],
-  );
+  // Ingest-precomputed ranking (package_stats, idx_pkgstats_eco_rank).
+  const { rows } = await pool.query(ECOSYSTEM_DEEP_DIVE_SQL, [ecosystem, limit]);
   return rows as { name: string; cve_count: number; kev_count: number; max_epss: number | null }[];
 }
 export const getEcosystemDeepDive = (ecosystem: string, limit = 200) =>

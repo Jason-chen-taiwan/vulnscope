@@ -2,6 +2,7 @@ import type { MetadataRoute } from "next";
 import { pool } from "@/db/client";
 import { routing } from "@/i18n/routing";
 import { INSIGHT_ECOSYSTEMS } from "@/lib/insights";
+import { SITEMAP_TOP_PACKAGES_SQL } from "@/lib/stats-read-sql";
 
 // Always render at request time — the DB isn't available at `next build`
 // (we don't ship a DB inside the Docker image).
@@ -72,20 +73,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       }
     }
 
-    // Pre-aggregate from affected first, JOIN packages by PK after.
-    // Same pattern as browsePackages — driving from packages forced a
-    // full 120k-row scan of affected per page request.
     const { rows: pkgs } = await pool.query<{ ecosystem: string; name: string }>(
-      `WITH agg AS (
-         SELECT package_id, COUNT(DISTINCT cve_id) AS cve_count
-           FROM affected
-          GROUP BY package_id
-       )
-       SELECT p.ecosystem, p.name
-         FROM agg
-         JOIN packages p ON p.id = agg.package_id
-        ORDER BY agg.cve_count DESC
-        LIMIT 5000`,
+      SITEMAP_TOP_PACKAGES_SQL,
+      [5000],
     );
     for (const r of pkgs) {
       const pkgPath = `/package/${encodeURIComponent(r.ecosystem)}/${encodeURIComponent(r.name)}`;

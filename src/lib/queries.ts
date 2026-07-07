@@ -4,6 +4,13 @@ import { unstable_cache } from "next/cache";
 import { db, pool } from "@/db/client";
 import { isAffected, type Ecosystem } from "./version-match";
 import type { OsvRange } from "./osv";
+import {
+  DASHBOARD_STATS_SQL,
+  VULN_TOTAL_SQL,
+  TOP_PACKAGES_BY_ECO_SQL,
+  PACKAGE_CVE_COUNT_SQL,
+  browsePackagesListSql,
+} from "./stats-read-sql";
 
 /**
  * Default TTL for SSR-side caches. 60 seconds is generous enough that
@@ -250,11 +257,28 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const baseFrom = `FROM vulnerabilities v ${whereSql}`;
-  const totalRes = await pool.query<{ c: number }>(
-    `${pkgSearchCte} SELECT COUNT(*) AS c ${baseFrom}`,
-    params,
-  );
-  const total = totalRes.rows[0]?.c ?? 0;
+  let total = 0;
+  if (where.length === 0) {
+    // Unfiltered browse: COUNT(*) over 74k rows is a D1 CPU-limit risk.
+    // page_stats.vuln_total is refreshed by every ingest. Fall back to the
+    // live count only when the stats row is missing (pre-migration D1).
+    const t = await pool.query<{ vuln_total: number }>(VULN_TOTAL_SQL);
+    if (t.rows.length > 0) {
+      total = t.rows[0].vuln_total;
+    } else {
+      const totalRes = await pool.query<{ c: number }>(
+        `SELECT COUNT(*) AS c ${baseFrom}`,
+        params,
+      );
+      total = totalRes.rows[0]?.c ?? 0;
+    }
+  } else {
+    const totalRes = await pool.query<{ c: number }>(
+      `${pkgSearchCte} SELECT COUNT(*) AS c ${baseFrom}`,
+      params,
+    );
+    total = totalRes.rows[0]?.c ?? 0;
+  }
 
   // Severity rollup via correlated subqueries: pick the highest scoring
   // CVSS row per CVE (SQLite has no LATERAL).
@@ -372,11 +396,11 @@ export async function getPackageMetadata(
   );
   if (pkgRows.length === 0) return null;
   const pkg = pkgRows[0];
-  const { rows: cntRows } = await pool.query<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM affected WHERE package_id = ?`,
+  const { rows: cntRows } = await pool.query<{ cve_count: number }>(
+    PACKAGE_CVE_COUNT_SQL,
     [pkg.id],
   );
-  return { package: pkg, cve_count: cntRows[0]?.n ?? 0 };
+  return { package: pkg, cve_count: cntRows[0]?.cve_count ?? 0 };
 }
 
 export async function getPackageWithCves(
@@ -506,13 +530,10 @@ export interface DashboardStats {
   vuln_total: number;
 }
 
-// 60s in-memory cache. The six COUNT(*) subqueries each force buffer-cache
-// thrashing on the 243MB vulnerabilities table on our 512MB DB machine,
-// taking 20+ seconds on cold cache. The displayed numbers change at most
-// every few minutes during ingest, so a 60s TTL is generous from a UX
-// perspective and removes the per-pageview cost entirely. Per-process
-// memory (lives in the web Node process); two web machines would each
-// hold an independent copy — fine, both stale at most 60s.
+// 60s in-memory cache. The totals are precomputed in page_stats so the
+// query is cheap, but the homepage calls this on every render — the cache
+// still saves a D1 round-trip per view. Replaced by unstable_cache in the
+// KV-cache task.
 let dashboardStatsCache: { at: number; value: DashboardStats } | null = null;
 const DASHBOARD_STATS_TTL_MS = 60_000;
 
@@ -521,16 +542,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   if (dashboardStatsCache && now - dashboardStatsCache.at < DASHBOARD_STATS_TTL_MS) {
     return dashboardStatsCache.value;
   }
-  const { rows } = await pool.query(`
-    SELECT
-      (SELECT COUNT(*) FROM vulnerabilities WHERE published_at > datetime('now','-1 day')) AS new_today,
-      (SELECT COUNT(*) FROM vulnerabilities WHERE published_at > datetime('now','-7 days')) AS new_week,
-      (SELECT COUNT(*) FROM cvss_scores WHERE severity = 'CRITICAL') AS critical_total,
-      (SELECT COUNT(*) FROM vulnerabilities WHERE kev = 1) AS kev_total,
-      (SELECT COUNT(*) FROM packages) AS package_total,
-      (SELECT COUNT(*) FROM vulnerabilities) AS vuln_total
-  `);
-  const value = rows[0] as DashboardStats;
+  // Totals come from page_stats (precomputed at ingest — COUNT(*) over the
+  // 74k-row table overloaded D1, 2026-07-06). new_today/new_week stay live:
+  // cheap idx_vuln_published range scans, and inherently now-relative.
+  const { rows } = await pool.query<DashboardStats>(DASHBOARD_STATS_SQL);
+  const value = rows[0]; // LEFT JOIN from inline 1-row table ⇒ always 1 row
   dashboardStatsCache = { at: now, value };
   return value;
 }
@@ -551,23 +567,11 @@ export const getRecentKev = unstable_cache(_getRecentKev, ["getRecentKev"], {
 });
 
 async function _getTopPackages(ecosystem: string, limit: number) {
-  // Drive the join from `affected` rather than `packages`. The new
-  // composite index idx_affected_eco_pkg (ecosystem, package_id)
-  // INCLUDE (cve_id) — created in migration 0006 — lets PG enter the
-  // affected table via the ecosystem key directly and run COUNT(DISTINCT
-  // cve_id) as an index-only scan.
-  const { rows } = await pool.query(
-    `SELECT a.ecosystem, p.name, COUNT(DISTINCT a.cve_id) AS cve_count,
-            COUNT(*) FILTER (WHERE v.kev = 1) AS kev_count
-       FROM affected a
-       JOIN packages p ON p.id = a.package_id
-       JOIN vulnerabilities v ON v.cve_id = a.cve_id
-      WHERE a.ecosystem = ?
-      GROUP BY a.ecosystem, p.name
-      ORDER BY kev_count DESC, cve_count DESC
-      LIMIT ?`,
-    [ecosystem, limit],
-  );
+  // Reads the ingest-precomputed package_stats ranking (idx_pkgstats_eco_rank).
+  // The old shape aggregated 119k affected rows per call — ×6 on the homepage —
+  // and the comment claimed an idx_affected_eco_pkg index that only ever
+  // existed in the Postgres schema, so every call was a full scan on D1.
+  const { rows } = await pool.query(TOP_PACKAGES_BY_ECO_SQL, [ecosystem, limit]);
   return rows as Array<{ ecosystem: string; name: string; cve_count: number; kev_count: number }>;
 }
 // Wrapped in unstable_cache: the homepage calls this 6× per render
@@ -622,68 +626,25 @@ async function _browsePackages(f: PackageListFilter) {
   );
   const total = totalRes.rows[0]?.c ?? 0;
 
-  // Previously this query did `FROM packages p LEFT JOIN affected a LEFT
-  // JOIN vulnerabilities v ... GROUP BY p.ecosystem, p.name` which forced
-  // a full scan of the 120k-row affected table for every page request,
-  // even with pagination. The new shape pre-aggregates from affected
-  // first (using idx_affected_eco_pkg when ecosystem is filtered, or
-  // idx_affected_pkg as a smaller scan), then joins the 15k packages
-  // by PK. ORDER BY happens before pagination, so the aggregate is
-  // computed once over the eligible affected rows, not per page.
-  const orderBy = f.sort === "name"
-    ? "p.ecosystem, p.name"
-    : "agg.kev_count DESC, agg.cve_count DESC, p.name";
-
-  // affected-side filter: same predicates as packages where applicable,
-  // so the pre-aggregate already excludes packages we won't show.
-  // Params are appended in positional order to match the `?` placeholders:
-  // [agg ecosystem?, outer name?, outer ecosystem?, pageSize, offset].
-  const affParams: unknown[] = [];
-  const affWhere: string[] = [];
-  if (f.ecosystem) {
-    affWhere.push(`a.ecosystem = ?`);
-    affParams.push(f.ecosystem);
-  }
-  const affWhereSql = affWhere.length ? `WHERE ${affWhere.join(" AND ")}` : "";
-
-  // Push name-filter + ecosystem-filter into the outer SELECT against
-  // packages so we can still narrow by name without breaking the
-  // pre-aggregate's index path.
-  const nameFilterClauses: string[] = [];
+  // List page: LEFT JOIN the ingest-precomputed package_stats (16k rows)
+  // instead of aggregating 119k affected rows per request. Packages without
+  // a stats row (no affected CVEs yet) coalesce to 0 — same semantics as the
+  // old LEFT JOIN aggregate.
+  const listParams: unknown[] = [];
   if (q) {
     const nm = nameMatchClause();
-    nameFilterClauses.push(nm.clause);
-    affParams.push(nm.param);
+    listParams.push(nm.param);
   }
-  if (f.ecosystem) {
-    nameFilterClauses.push(`p.ecosystem = ?`);
-    affParams.push(f.ecosystem);
-  }
-  const outerWhereSql = nameFilterClauses.length
-    ? `WHERE ${nameFilterClauses.join(" AND ")}`
-    : "";
-
-  affParams.push(pageSize);
-  affParams.push(offset);
+  if (f.ecosystem) listParams.push(f.ecosystem);
+  listParams.push(pageSize, offset);
   const { rows } = await pool.query(
-    `WITH agg AS (
-       SELECT a.package_id,
-              COUNT(DISTINCT a.cve_id) AS cve_count,
-              COUNT(*) FILTER (WHERE v.kev = 1) AS kev_count
-         FROM affected a
-         JOIN vulnerabilities v ON v.cve_id = a.cve_id
-         ${affWhereSql}
-        GROUP BY a.package_id
-     )
-     SELECT p.ecosystem, p.name,
-            COALESCE(agg.cve_count, 0) AS cve_count,
-            COALESCE(agg.kev_count, 0) AS kev_count
-       FROM packages p
-       LEFT JOIN agg ON agg.package_id = p.id
-       ${outerWhereSql}
-      ORDER BY ${orderBy}
-      LIMIT ? OFFSET ?`,
-    affParams,
+    browsePackagesListSql({
+      nameViaFts: useFts,
+      hasName: Boolean(q),
+      hasEcosystem: Boolean(f.ecosystem),
+      sort: f.sort === "name" ? "name" : "cves",
+    }),
+    listParams,
   );
   return {
     items: rows as Array<{ ecosystem: string; name: string; cve_count: number; kev_count: number }>,
