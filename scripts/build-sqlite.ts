@@ -12,6 +12,7 @@ import { streamOsvZip, type UpsertCtx } from "../src/lib/ingest/osv-batch";
 import { SqliteIngestSink } from "../src/lib/ingest/sink-sqlite";
 import { streamEpss } from "../src/lib/ingest/epss-core";
 import { fetchKev, parseKevDate } from "../src/lib/ingest/kev-core";
+import { statsDdl, fullBuildStatsSql } from "../src/lib/ingest/stats-sql";
 
 /**
  * Creates the full VulnScope schema in the given better-sqlite3 Database.
@@ -87,6 +88,10 @@ export function buildSchema(db: Database.Database): void {
       name, tokenize='trigram'
     );
   `);
+
+  // Precomputed stats tables (see src/lib/ingest/stats-sql.ts). Part of the
+  // schema so the full build, tests, and the D1 additive migration all agree.
+  for (const stmt of statsDdl()) db.exec(stmt);
 }
 
 // ─── SQLite build entry point (Task 2.2) ─────────────────────────────────────
@@ -274,6 +279,9 @@ async function main() {
 
   buildFts(db);
 
+  console.log("[stats] computing page_stats + package_stats");
+  for (const stmt of fullBuildStatsSql()) db.exec(stmt);
+
   const counts = db
     .prepare(
       `SELECT
@@ -284,7 +292,9 @@ async function main() {
          (SELECT COUNT(*) FROM refs)            AS refs,
          (SELECT COUNT(*) FROM vuln_aliases)    AS aliases,
          (SELECT COUNT(*) FROM vulns_fts)       AS vulns_fts,
-         (SELECT COUNT(*) FROM packages_fts)    AS packages_fts`,
+         (SELECT COUNT(*) FROM packages_fts)    AS packages_fts,
+         (SELECT COUNT(*) FROM package_stats)   AS package_stats,
+         (SELECT vuln_total FROM page_stats WHERE id = 1) AS stats_vuln_total`,
     )
     .get();
   console.log(`[build-sqlite] done: ${JSON.stringify(counts)}`);

@@ -10,7 +10,7 @@ describe("buildSchema", () => {
     buildSchema(db);
   });
 
-  it("creates the 7 base tables", () => {
+  it("creates the 9 base tables", () => {
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_content%' AND name NOT LIKE '%_data%' AND name NOT LIKE '%_idx%' AND name NOT LIKE '%_docsize%' AND name NOT LIKE '%_config%'`
@@ -26,11 +26,13 @@ describe("buildSchema", () => {
       "vuln_aliases",
       "refs",
       "sync_jobs",
+      "page_stats",
+      "package_stats",
     ];
     for (const t of expected) {
       expect(tables, `table '${t}' should exist`).toContain(t);
     }
-    expect(tables).toHaveLength(7);
+    expect(tables).toHaveLength(9);
   });
 
   it("creates the 2 FTS5 virtual tables", () => {
@@ -65,6 +67,8 @@ describe("buildSchema", () => {
       "idx_vuln_epss",
       "idx_sync_jobs_source_started",
       "idx_sync_jobs_started",
+      "idx_pkgstats_eco_rank",
+      "idx_pkgstats_rank",
     ];
     for (const idx of expected) {
       expect(indexes, `index '${idx}' should exist`).toContain(idx);
