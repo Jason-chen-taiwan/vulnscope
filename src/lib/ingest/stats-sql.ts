@@ -72,3 +72,169 @@ SELECT 1,
   datetime('now')`,
   ];
 }
+
+export interface StatsSqlOptions {
+  /** First CVE year chunk (default 1999). */
+  yearStart?: number;
+  /** Exclusive upper year; the final chunk is open-ended `>= 'CVE-<this>-'`.
+   *  Default: current UTC year + 1, so the current year is always a bounded
+   *  chunk and anything newer lands in the open-ended tail. */
+  yearEndExclusive?: number;
+  /** packages id-range chunk size for page_stats.package_total (default 2000). */
+  pkgIdStep?: number;
+  /** Last bounded package id; final chunk is open-ended `>= this` (default 100000). */
+  pkgIdMax?: number;
+  /** package_stats rebuild id-range chunk size (default 1000). */
+  rebuildStep?: number;
+  /** _delta_cves manifest ids per INSERT statement (default 200). */
+  idsPerInsert?: number;
+  /** Modulo shards for the touched-package recompute (default 8). */
+  recomputeShards?: number;
+}
+
+function resolveOpts(opts?: StatsSqlOptions): Required<StatsSqlOptions> {
+  return {
+    yearStart: opts?.yearStart ?? 1999,
+    yearEndExclusive: opts?.yearEndExclusive ?? new Date().getUTCFullYear() + 1,
+    pkgIdStep: opts?.pkgIdStep ?? 2000,
+    pkgIdMax: opts?.pkgIdMax ?? 100_000,
+    rebuildStep: opts?.rebuildStep ?? 1000,
+    idsPerInsert: opts?.idsPerInsert ?? 200,
+    recomputeShards: opts?.recomputeShards ?? 8,
+  };
+}
+
+function sqlQuote(id: string): string {
+  return `'${id.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Chunked recount of page_stats. Bounded per statement:
+ *  - vuln_total / critical_total: CVE-year PK ranges + under/over catch-alls
+ *  - package_total: integer id ranges + open-ended tail
+ *  - kev_total: single statement via idx_vuln_kev (~1.6k rows)
+ * Results accumulate in _stats_scratch, then one INSERT OR REPLACE.
+ */
+function pageStatsRecountSql(o: Required<StatsSqlOptions>): string[] {
+  const stmts: string[] = [
+    `DROP TABLE IF EXISTS _stats_scratch`,
+    `CREATE TABLE _stats_scratch (k TEXT NOT NULL, v INTEGER NOT NULL)`,
+  ];
+  const yearRanges: Array<[string, string | null]> = [];
+  yearRanges.push(["", `CVE-${o.yearStart}-`]); // under-range catch-all
+  for (let y = o.yearStart; y < o.yearEndExclusive; y++) {
+    yearRanges.push([`CVE-${y}-`, `CVE-${y + 1}-`]);
+  }
+  yearRanges.push([`CVE-${o.yearEndExclusive}-`, null]); // open-ended tail
+
+  for (const [lo, hi] of yearRanges) {
+    const bounds = [
+      lo ? `cve_id >= ${sqlQuote(lo)}` : null,
+      hi ? `cve_id < ${sqlQuote(hi)}` : null,
+    ].filter(Boolean).join(" AND ");
+    stmts.push(
+      `INSERT INTO _stats_scratch (k, v) VALUES ('vuln',
+  (SELECT COUNT(*) FROM vulnerabilities WHERE ${bounds}))`,
+      `INSERT INTO _stats_scratch (k, v) VALUES ('crit',
+  (SELECT COUNT(*) FROM cvss_scores WHERE ${bounds} AND severity = 'CRITICAL'))`,
+    );
+  }
+  for (let lo = 0; lo < o.pkgIdMax; lo += o.pkgIdStep) {
+    stmts.push(
+      `INSERT INTO _stats_scratch (k, v) VALUES ('pkg',
+  (SELECT COUNT(*) FROM packages WHERE id >= ${lo} AND id < ${lo + o.pkgIdStep}))`,
+    );
+  }
+  stmts.push(
+    `INSERT INTO _stats_scratch (k, v) VALUES ('pkg',
+  (SELECT COUNT(*) FROM packages WHERE id >= ${o.pkgIdMax}))`,
+    `INSERT INTO _stats_scratch (k, v) VALUES ('kev',
+  (SELECT COUNT(*) FROM vulnerabilities WHERE kev = 1))`,
+    `INSERT OR REPLACE INTO page_stats
+  (id, vuln_total, package_total, critical_total, kev_total, computed_at)
+SELECT 1,
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'vuln'),
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'pkg'),
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'crit'),
+  (SELECT COALESCE(SUM(v), 0) FROM _stats_scratch WHERE k = 'kev'),
+  datetime('now')`,
+    `DROP TABLE _stats_scratch`,
+  );
+  return stmts;
+}
+
+/**
+ * Daily-delta stats refresh, run ON D1 after the data statements landed.
+ * Scoped: only packages touched by the delta's CVEs are recomputed
+ * (idx_affected_cve finds them; idx_affected_pkg drives each recompute).
+ */
+export function deltaStatsSql(cveIds: string[], opts?: StatsSqlOptions): string[] {
+  if (cveIds.length === 0) return [];
+  const o = resolveOpts(opts);
+  const stmts: string[] = [
+    `DROP TABLE IF EXISTS _delta_cves`,
+    `CREATE TABLE _delta_cves (cve_id TEXT PRIMARY KEY)`,
+  ];
+  for (let i = 0; i < cveIds.length; i += o.idsPerInsert) {
+    const batch = cveIds.slice(i, i + o.idsPerInsert);
+    stmts.push(
+      `INSERT OR IGNORE INTO _delta_cves (cve_id) VALUES ${batch
+        .map((id) => `(${sqlQuote(id)})`)
+        .join(",")}`,
+    );
+  }
+  stmts.push(
+    `DROP TABLE IF EXISTS _touched_pkgs`,
+    `CREATE TABLE _touched_pkgs (package_id INTEGER PRIMARY KEY)`,
+    `INSERT OR IGNORE INTO _touched_pkgs (package_id)
+SELECT DISTINCT package_id FROM affected
+ WHERE package_id IS NOT NULL
+   AND cve_id IN (SELECT cve_id FROM _delta_cves)`,
+  );
+  for (let k = 0; k < o.recomputeShards; k++) {
+    stmts.push(
+      `DELETE FROM package_stats WHERE package_id IN
+  (SELECT package_id FROM _touched_pkgs WHERE package_id % ${o.recomputeShards} = ${k})`,
+      `INSERT INTO package_stats (package_id, ecosystem, name, cve_count, kev_count, max_epss)
+${PACKAGE_STATS_SELECT}
+  FROM _touched_pkgs t
+  JOIN packages p ON p.id = t.package_id
+  JOIN affected a ON a.package_id = t.package_id
+  JOIN vulnerabilities v ON v.cve_id = a.cve_id
+ WHERE t.package_id % ${o.recomputeShards} = ${k}
+ GROUP BY p.id, p.ecosystem, p.name`,
+    );
+  }
+  stmts.push(...pageStatsRecountSql(o));
+  stmts.push(`DROP TABLE IF EXISTS _touched_pkgs`, `DROP TABLE IF EXISTS _delta_cves`);
+  return stmts;
+}
+
+/**
+ * One-time D1 backfill (additive migration) and disaster-recovery rebuild.
+ * DDL first (IF NOT EXISTS), then package_stats sharded by id ranges, then
+ * the same chunked page_stats recount the daily delta uses.
+ */
+export function rebuildAllStatsSql(opts?: StatsSqlOptions): string[] {
+  const o = resolveOpts(opts);
+  const stmts: string[] = [...statsDdl()];
+  const ranges: Array<[number, number | null]> = [];
+  for (let lo = 0; lo < o.pkgIdMax; lo += o.rebuildStep) ranges.push([lo, lo + o.rebuildStep]);
+  ranges.push([o.pkgIdMax, null]);
+  for (const [lo, hi] of ranges) {
+    const bound = hi === null ? `p.id >= ${lo}` : `p.id >= ${lo} AND p.id < ${hi}`;
+    const delBound = hi === null ? `package_id >= ${lo}` : `package_id >= ${lo} AND package_id < ${hi}`;
+    stmts.push(
+      `DELETE FROM package_stats WHERE ${delBound}`,
+      `INSERT INTO package_stats (package_id, ecosystem, name, cve_count, kev_count, max_epss)
+${PACKAGE_STATS_SELECT}
+  FROM packages p
+  JOIN affected a ON a.package_id = p.id
+  JOIN vulnerabilities v ON v.cve_id = a.cve_id
+ WHERE ${bound}
+ GROUP BY p.id, p.ecosystem, p.name`,
+    );
+  }
+  stmts.push(...pageStatsRecountSql(o));
+  return stmts;
+}
