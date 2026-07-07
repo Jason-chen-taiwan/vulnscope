@@ -27,7 +27,9 @@
 - ❌ 回 `exceeded [code: 7429]` → 還沒好，再等
 - ⚠️ **不要**跑 `SELECT count(*)`（全表掃描會再次觸發 reset，前功盡棄）
 
-## Step 3 — 小範圍增量 CI 驗證（npm only）
+## Step 3 — 小範圍增量 CI 驗證（npm only，在查詢優化上線後執行）
+
+**重要**：在進行此步驟前，必須先完成下方「查詢優化上線步驟」的 stats 表建立及查詢層部署。
 
 D1 穩定後，GitHub → Actions → **"Ingest → D1"** → **Run workflow**：
 - `incremental` = ✅ **true**
@@ -79,3 +81,20 @@ npm 成功後，重跑 workflow，`ecosystems` 依序放大：
 
 **尚未驗證的唯一一件事**：增量 delta 推**正式（大）D1** 是否順利 —— 卡在 D1 目前不穩。
 這張卡就是為了完成這最後一哩。
+
+---
+
+## 查詢優化上線步驟(D1 恢復後,依序)
+
+1. **確認 D1 穩定**(Step 2 的輕量查詢連續 3 次通過)。
+2. **建立 stats 表並回填**(增量遷移,不動其他表、不重灌):
+   `bash scripts/push-to-d1.sh vulnscope stats-rebuild`
+   —— 全部是分片小語句;失敗可安全重跑。
+3. **部署新查詢層**:`pnpm deploy`
+   (含 KV incremental cache;需先確認 wrangler.jsonc 的 NEXT_INC_CACHE_KV id 已填。)
+4. **驗證**:首頁/zh 首頁秒開;`SELECT * FROM page_stats WHERE id=1` 單列有值;
+   `/packages`、`/insights/*` 正常。
+5. **之後**再跑增量 CI 驗證(原 Step 3/4)—— 每日 delta 會自動帶 stats 刷新。
+6. **檢查 Cloudflare Cache Rule**:next.config 的 s-maxage header 需搭配
+   docs/edge-caching.md 的 Cache Rule 才會在邊緣生效 —— Dashboard → Caching →
+   Cache Rules 確認存在;沒有就照該文件補上。
