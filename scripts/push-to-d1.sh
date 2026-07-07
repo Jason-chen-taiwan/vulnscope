@@ -170,6 +170,10 @@ apply_sentinel_sql() {
   ' "$SQL_FILE"
   local TOTAL_BATCHES N=0
   TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
+  if [[ "$TOTAL_BATCHES" -eq 0 ]]; then
+    echo "[push-to-d1]   → nothing to apply (0 statements)"
+    return 0
+  fi
   for BATCH in "$BATCH_DIR"/batch-*; do
     N=$((N + 1))
     echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(wc -l < "$BATCH" | tr -d ' ') lines)"
