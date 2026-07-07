@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { buildSchema } from "../../scripts/build-sqlite.js";
-import { seedFixture } from "./ingest/stats-sql.test.js";
+import { seedFixture } from "./ingest/stats-sql.fixtures.js";
 import { fullBuildStatsSql } from "./ingest/stats-sql.js";
 import {
   DASHBOARD_STATS_SQL,
