@@ -68,8 +68,13 @@ fi
 
 PUSH_MODE="${ARG3:-${PUSH_MODE:-delta}}"
 
-if [[ "$PUSH_MODE" != "full" && "$PUSH_MODE" != "delta" ]]; then
-  echo "[push-to-d1] ERROR: PUSH_MODE must be 'full' or 'delta' (got '$PUSH_MODE')"
+# emit-stats-sql runs from $ROOT; make the sqlite path absolute so it resolves.
+if [[ -f "$SQLITE_FILE" ]]; then
+  SQLITE_FILE="$(cd "$(dirname "$SQLITE_FILE")" && pwd)/$(basename "$SQLITE_FILE")"
+fi
+
+if [[ "$PUSH_MODE" != "full" && "$PUSH_MODE" != "delta" && "$PUSH_MODE" != "stats-rebuild" ]]; then
+  echo "[push-to-d1] ERROR: PUSH_MODE must be 'full', 'delta' or 'stats-rebuild' (got '$PUSH_MODE')"
   exit 1
 fi
 
@@ -81,10 +86,12 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 STRIP='^(BEGIN TRANSACTION|COMMIT|PRAGMA )'
 
 # ── Validate inputs ──────────────────────────────────────────────────────────
-if [[ ! -f "$SQLITE_FILE" ]]; then
-  echo "[push-to-d1] ERROR: SQLite file not found: $SQLITE_FILE"
-  echo "  Build it first with:  INGEST_ECOSYSTEMS=Hex pnpm build:sqlite"
-  exit 1
+if [[ "$PUSH_MODE" != "stats-rebuild" ]]; then
+  if [[ ! -f "$SQLITE_FILE" ]]; then
+    echo "[push-to-d1] ERROR: SQLite file not found: $SQLITE_FILE"
+    echo "  Build it first with:  INGEST_ECOSYSTEMS=Hex pnpm build:sqlite"
+    exit 1
+  fi
 fi
 
 echo "[push-to-d1] ══════════════════════════════════════════════"
@@ -102,9 +109,11 @@ push_full() {
 
   echo
   echo "[push-to-d1] [full 1/4] Dumping base tables (DROP + recreate) …"
-  local BASE_TABLES="vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs sync_state"
+  local BASE_TABLES="vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs sync_state page_stats package_stats"
 
   cat > "$D1_IMPORT_SQL" <<'PREAMBLE'
+DROP TABLE IF EXISTS package_stats;
+DROP TABLE IF EXISTS page_stats;
 DROP TABLE IF EXISTS sync_state;
 DROP TABLE IF EXISTS sync_jobs;
 DROP TABLE IF EXISTS refs;
@@ -147,6 +156,38 @@ SQL
 
   $WRANGLER d1 execute "$D1_DATABASE" --file="$BUILD_FTS_SQL" --remote --yes
   echo "[push-to-d1]   → FTS rebuild complete"
+}
+
+# Apply a sentinel-delimited SQL file to D1 in batches of 150 statements,
+# retrying each batch up to 3×. Shared by delta and stats-rebuild modes.
+apply_sentinel_sql() {
+  local SQL_FILE="$1"
+  local BATCH_DIR="$WORK_DIR/sql-batches-$RANDOM"
+  mkdir -p "$BATCH_DIR"
+  awk -v dir="$BATCH_DIR" -v per=150 '
+    /^--@@STMT@@$/ { sc++; if (sc % per == 0) bi++; next }
+    { print >> (dir "/batch-" sprintf("%05d", bi)) }
+  ' "$SQL_FILE"
+  local TOTAL_BATCHES N=0
+  TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
+  for BATCH in "$BATCH_DIR"/batch-*; do
+    N=$((N + 1))
+    echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(wc -l < "$BATCH" | tr -d ' ') lines)"
+    local ATTEMPT=1 OK=0
+    while [[ "$ATTEMPT" -le 3 ]]; do
+      if $WRANGLER d1 execute "$D1_DATABASE" --file="$BATCH" --remote --yes; then
+        OK=1; break
+      fi
+      echo "[push-to-d1]     ⚠ batch $N attempt $ATTEMPT failed; retrying …"
+      ATTEMPT=$((ATTEMPT + 1))
+      sleep 5
+    done
+    if [[ "$OK" -ne 1 ]]; then
+      echo "[push-to-d1] ERROR: batch $N failed after 3 attempts"
+      return 1
+    fi
+  done
+  echo "[push-to-d1]   → applied in $TOTAL_BATCHES batch(es)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -344,6 +385,14 @@ SELECT
 FROM packages;
 SQL
 
+  # ── (e2) Stats refresh: scoped package_stats recompute + chunked page_stats
+  #        recount (src/lib/ingest/stats-sql.ts). Emitted AFTER all data/FTS
+  #        statements so it aggregates post-upsert state, and BEFORE sync_state
+  #        so the watermark-last invariant holds. Every statement is bounded
+  #        (year/id-range chunks; scratch-table-driven recompute) — no full
+  #        scans of vulnerabilities/affected/cvss_scores on D1. ──
+  (cd "$ROOT" && pnpm exec tsx scripts/emit-stats-sql.ts delta "$SQLITE_FILE") >> "$DELTA_SQL"
+
   # ── (f) sync_state: watermark rows. MUST be emitted LAST (after all data +
   #        FTS), so a mid-push failure cannot advance a watermark ahead of data
   #        that never landed. create-if-not-exists then UPSERT by source. ──
@@ -365,6 +414,10 @@ SQL
   # Strip anything D1 rejects (defensive — quote() output has none, but keep it).
   grep -vE "$STRIP" "$DELTA_SQL" > "$DELTA_SQL.clean" && mv "$DELTA_SQL.clean" "$DELTA_SQL"
 
+  # Debug: DEBUG_KEEP_SQL=/path/file.sql preserves the generated delta SQL
+  # (WORK_DIR is trap-deleted on exit).
+  [[ -n "${DEBUG_KEEP_SQL:-}" ]] && cp "$DELTA_SQL" "$DEBUG_KEEP_SQL"
+
   local STMT_COUNT
   STMT_COUNT=$(grep -c '^--@@STMT@@$' "$DELTA_SQL" || true)
   echo "[push-to-d1]   → d1-delta.sql: $STMT_COUNT statement(s), $(wc -l < "$DELTA_SQL") lines"
@@ -376,69 +429,50 @@ SQL
 
   echo
   echo "[push-to-d1] [delta 2/3] Applying delta to D1 ($D1_DATABASE) in batches …"
-  # A single `d1 execute --file` of the whole delta can exceed D1's per-request
-  # CPU limit ("D1 DB exceeded its CPU time limit and was reset") on large days.
-  # Split into batches of complete statements and apply each separately.
-  # Statements may span multiple physical lines (quote() preserves embedded
-  # newlines in OSV/GHSA text), so we batch by sentinel count, not line count
-  # (child-table DELETE-then-INSERT for a given cve_id stay in relative order).
-  local BATCH_DIR="$WORK_DIR/delta-batches"
-  mkdir -p "$BATCH_DIR"
-  # Split into batches of complete statements. Statements may span multiple
-  # physical lines (quote() preserves newlines in OSV/GHSA description text), so
-  # we CANNOT split by line count. Each generated statement is followed by a
-  # sentinel line '--@@STMT@@'; we batch every 150 statements at sentinel
-  # boundaries and drop the sentinels from the emitted batch files.
-  awk -v dir="$BATCH_DIR" -v per=150 '
-    /^--@@STMT@@$/ { sc++; if (sc % per == 0) bi++; next }
-    { print >> (dir "/batch-" sprintf("%05d", bi)) }
-  ' "$DELTA_SQL"
-  local TOTAL_BATCHES N=0
-  TOTAL_BATCHES=$(find "$BATCH_DIR" -name 'batch-*' | wc -l | tr -d ' ')
-  for BATCH in "$BATCH_DIR"/batch-*; do
-    N=$((N + 1))
-    # Statements can span multiple lines (quoted description text), and the
-    # sentinels have been stripped from batch files, so we report line count,
-    # not a (misleading) ';'-based statement count. The authoritative statement
-    # total is STMT_COUNT above.
-    echo "[push-to-d1]   → batch $N/$TOTAL_BATCHES ($(wc -l < "$BATCH" | tr -d ' ') lines)"
-    # Retry each batch up to 3x — a "D1 exceeded its CPU time limit and was
-    # reset" is transient and the batch is idempotent (upsert / delete+insert
-    # per cve_id), so re-applying is safe.
-    local ATTEMPT=1 OK=0
-    while [[ "$ATTEMPT" -le 3 ]]; do
-      if $WRANGLER d1 execute "$D1_DATABASE" --file="$BATCH" --remote --yes; then
-        OK=1; break
-      fi
-      echo "[push-to-d1]     ⚠ batch $N attempt $ATTEMPT failed; retrying …"
-      ATTEMPT=$((ATTEMPT + 1))
-      sleep 5
-    done
-    if [[ "$OK" -ne 1 ]]; then
-      echo "[push-to-d1] ERROR: batch $N failed after 3 attempts"
-      return 1
-    fi
-  done
-  echo "[push-to-d1]   → delta applied in $TOTAL_BATCHES batch(es) (no tables dropped; existing data preserved)"
+  apply_sentinel_sql "$DELTA_SQL" || return 1
+  echo "[push-to-d1]   → delta applied (no tables dropped; existing data preserved)"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  STATS-REBUILD MODE — one-time additive migration / disaster recovery.
+#  Creates page_stats/package_stats (IF NOT EXISTS) and backfills them with
+#  bounded, sharded statements. Touches NO other tables. No SQLite file needed.
+# ─────────────────────────────────────────────────────────────────────────────
+push_stats_rebuild() {
+  local REBUILD_SQL="$WORK_DIR/stats-rebuild.sql"
+  echo
+  echo "[push-to-d1] [stats-rebuild 1/2] Generating sharded rebuild SQL …"
+  (cd "$ROOT" && pnpm exec tsx scripts/emit-stats-sql.ts rebuild) > "$REBUILD_SQL"
+  echo "[push-to-d1]   → $(grep -c '^--@@STMT@@$' "$REBUILD_SQL") statement(s)"
+  echo
+  echo "[push-to-d1] [stats-rebuild 2/2] Applying to D1 ($D1_DATABASE) …"
+  apply_sentinel_sql "$REBUILD_SQL"
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if [[ "$PUSH_MODE" == "full" ]]; then
   push_full
+elif [[ "$PUSH_MODE" == "stats-rebuild" ]]; then
+  push_stats_rebuild
 else
   push_delta
 fi
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 echo
-echo "[push-to-d1] Verification counts …"
-for TBL in vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs sync_state vulns_fts packages_fts; do
+echo "[push-to-d1] Verification probes (existence only — no full-table counts) …"
+for TBL in vulnerabilities packages affected cvss_scores vuln_aliases refs sync_jobs sync_state page_stats package_stats vulns_fts packages_fts; do
   printf "  %-20s " "$TBL:"
   $WRANGLER d1 execute "$D1_DATABASE" \
     --remote \
-    --command="SELECT count(*) AS cnt FROM $TBL" \
-    2>&1 | grep -E '"cnt"' | head -1 || echo "(query failed)"
+    --command="SELECT CASE WHEN EXISTS (SELECT 1 FROM $TBL LIMIT 1) THEN 'has rows' ELSE 'EMPTY' END AS probe" \
+    2>&1 | grep -E '"probe"' | head -1 || echo "(probe failed)"
 done
+echo
+echo "[push-to-d1] page_stats snapshot:"
+$WRANGLER d1 execute "$D1_DATABASE" --remote \
+  --command="SELECT vuln_total, package_total, critical_total, kev_total, computed_at FROM page_stats WHERE id = 1" \
+  2>&1 | grep -E '"(vuln_total|package_total|critical_total|kev_total|computed_at)"' || echo "  (page_stats missing — run stats-rebuild)"
 
 echo
 echo "[push-to-d1] ✓ Push complete ($PUSH_MODE) — D1 database: $D1_DATABASE"
