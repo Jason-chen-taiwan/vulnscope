@@ -37,7 +37,6 @@
     "freshnessAgeDay": "{n}d ago",
     "freshnessLine": "Data refreshed: oldest source {age}",
     "freshnessFailing": "{n, plural, =1 {1 source failing} other {# sources failing}}",
-    "freshnessNone": "⏳ No data yet — the scheduler runs its first ingest ~10 seconds after server start. See {link}.",
     "ingestInFlight": "⏳ ingest in progress — this page auto-updates",
     "viewSyncJobs": "view sync jobs"
   },
@@ -274,7 +273,7 @@
   },
   "Jobs": {
     "title": "Sync jobs",
-    "subtitle": "Last 100 ingest runs. The scheduler refreshes all sources every 24 hours.",
+    "subtitle": "Last 100 ingest runs. GitHub Actions refreshes all sources daily.",
     "colSource": "Source",
     "colStarted": "Started",
     "colDuration": "Duration",
@@ -282,7 +281,7 @@
     "colSeen": "Seen",
     "colChanged": "Changed",
     "colError": "Error",
-    "empty": "No jobs yet. They'll appear here ~10s after server boot once the scheduler runs its first tick.",
+    "empty": "No runs yet — entries appear after the first daily GitHub Actions ingest.",
     "trigger": "Trigger refresh now",
     "triggerHint": "Localhost-only unless {token} env is set."
   }

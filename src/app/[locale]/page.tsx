@@ -154,15 +154,11 @@ function FreshnessLine({
   t: Awaited<ReturnType<typeof getTranslations<"Home">>>;
 }) {
   if (freshness.length === 0) {
-    const txt = t("freshnessNone", { link: "__LINK__" });
-    const [before, after] = txt.split("__LINK__");
-    return (
-      <p className="mt-2 text-xs text-yellow-600">
-        {before}
-        <Link href="/admin/jobs" className="underline">/admin/jobs</Link>
-        {after}
-      </p>
-    );
+    // No sync_jobs rows yet (fresh D1 before the first GitHub Actions ingest
+    // writes its bookkeeping). Data itself is already served from the seed,
+    // so a "no data yet" banner would be false — show nothing; the freshness
+    // line appears on its own once the first scheduled ingest lands.
+    return null;
   }
   const ageLabel = oldestAgeH < 1
     ? t("freshnessAgeMin", { n: Math.round(oldestAgeH * 60) })

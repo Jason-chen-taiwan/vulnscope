@@ -37,7 +37,6 @@
     "freshnessAgeDay": "{n} 天前",
     "freshnessLine": "資料更新時間:最舊來源 {age}",
     "freshnessFailing": "{n} 個來源失敗",
-    "freshnessNone": "⏳ 還沒有資料 — 排程器會在伺服器啟動約 10 秒後開始第一次更新。詳見 {link}。",
     "ingestInFlight": "⏳ 資料正在更新中 — 本頁會自動刷新",
     "viewSyncJobs": "查看同步紀錄"
   },
@@ -274,7 +273,7 @@
   },
   "Jobs": {
     "title": "同步紀錄",
-    "subtitle": "最近 100 次資料同步。排程器每 24 小時自動更新所有來源。",
+    "subtitle": "最近 100 次資料同步。GitHub Actions 每日自動更新所有來源。",
     "colSource": "來源",
     "colStarted": "開始時間",
     "colDuration": "耗時",
@@ -282,7 +281,7 @@
     "colSeen": "讀取",
     "colChanged": "更新",
     "colError": "錯誤",
-    "empty": "還沒有紀錄。第一次排程約在伺服器啟動 10 秒後執行。",
+    "empty": "還沒有同步紀錄 — 每日排程(GitHub Actions)首次執行後就會出現。",
     "trigger": "立即觸發更新",
     "triggerHint": "預設只允許 localhost,要從遠端呼叫請設 {token} 環境變數。"
   }
