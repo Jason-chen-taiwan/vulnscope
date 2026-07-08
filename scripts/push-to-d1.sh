@@ -63,7 +63,7 @@ if [[ -n "$ARG1" && ! -f "$ARG1" && "$ARG1" != *.sqlite && -z "$ARG2" ]]; then
   D1_DATABASE="$ARG1"
 else
   SQLITE_FILE="${ARG1:-${SQLITE_FILE:-$ROOT/scratch-phase0/vulnscope.sqlite}}"
-  D1_DATABASE="${ARG2:-${D1_DATABASE:-vulnscope}}"
+  D1_DATABASE="${ARG2:-${D1_DATABASE:-vulnscope-v2}}"
 fi
 
 PUSH_MODE="${ARG3:-${PUSH_MODE:-delta}}"

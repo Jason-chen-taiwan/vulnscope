@@ -11,11 +11,13 @@
   "d1_databases": [
     {
       "binding": "DB",
-      // Production D1 (seeded in Phase 6 cutover). For local preview with the
-      // already-seeded Phase-0 dataset, override with
-      // `--d1 DB=vulnscope-phase0` or bind vulnscope-phase0 in a preview config.
-      "database_name": "vulnscope",
-      "database_id": "9cdd7df2-6e0e-4586-a3e8-bc5dc7736f78"
+      // Production D1. vulnscope-v2 replaced the original `vulnscope`
+      // (9cdd7df2…) on 2026-07-08: that instance degraded to ~70% failure on
+      // microsecond PK lookups — likely a wedged import session consuming the
+      // Durable Object's resources — with no user-facing reset. Fresh seed,
+      // 10/10 health probes. Old DB retained as fallback; delete once stable.
+      "database_name": "vulnscope-v2",
+      "database_id": "9491304c-e35b-4c68-8f39-14dd0f7ba5f3"
     }
   ],
   "kv_namespaces": [

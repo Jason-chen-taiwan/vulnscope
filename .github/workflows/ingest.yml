@@ -150,7 +150,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PUSH_MODE: delta
-        run: bash scripts/push-to-d1.sh scratch-phase0/vulnscope-incremental.sqlite vulnscope delta
+        run: bash scripts/push-to-d1.sh scratch-phase0/vulnscope-incremental.sqlite vulnscope-v2 delta
 
   # NOTE: There is intentionally NO scheduled weekly full-refresh job. A full
   # 13-ecosystem OSV DROP+rebuild writes ~677k rows, far over the D1 free
@@ -198,7 +198,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PUSH_MODE: delta
-        run: bash scripts/push-to-d1.sh scratch-phase0/vulnscope-incremental.sqlite vulnscope delta
+        run: bash scripts/push-to-d1.sh scratch-phase0/vulnscope-incremental.sqlite vulnscope-v2 delta
 
       # ── Non-incremental path (incremental=false): the legacy full / KEV-EPSS
       #    build, kept for on-demand full OSV rebuilds. ──
@@ -234,4 +234,4 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PUSH_MODE: ${{ steps.eco.outputs.push_mode }}
-        run: bash scripts/push-to-d1.sh vulnscope
+        run: bash scripts/push-to-d1.sh vulnscope-v2
