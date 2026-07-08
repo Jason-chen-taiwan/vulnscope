@@ -53,12 +53,19 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   // (e.g. cold-start race), still return the static entries — a partial
   // sitemap is better than a 500.
   try {
+    // Two indexed branches UNIONed instead of `kev OR epss >= …`: the OR
+    // defeats both indexes and full-scans 74k rows (~80ms CPU) on every
+    // crawler fetch — part of the 2026-07-08 D1 CPU-reset incident. The
+    // UNION runs idx_vuln_kev (~1.6k rows) + idx_vuln_epss (range) and
+    // dedupes, sorting only the ~10k merged rows.
     const { rows: cves } = await pool.query<{ cve_id: string; modified_at: Date | null }>(
-      `SELECT cve_id, modified_at
-         FROM vulnerabilities
-        WHERE kev = true OR epss_score >= 0.05
-        ORDER BY epss_score DESC NULLS LAST
-        LIMIT 20000`,
+      `SELECT cve_id, modified_at FROM (
+         SELECT cve_id, modified_at, epss_score FROM vulnerabilities WHERE kev = 1
+         UNION
+         SELECT cve_id, modified_at, epss_score FROM vulnerabilities WHERE epss_score >= 0.05
+       )
+       ORDER BY epss_score DESC NULLS LAST
+       LIMIT 20000`,
     );
     for (const r of cves) {
       const alternates = { languages: langs(`/cve/${r.cve_id}`) };

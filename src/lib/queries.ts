@@ -176,6 +176,9 @@ export async function getCveBundle(cveId: string) {
   return { vuln: v, scores, affected, refs, aliases, exploits };
 }
 
+/** Filtered-search counts stop scanning past this many matches. */
+export const SEARCH_COUNT_CAP = 1000;
+
 export interface SearchFilter {
   q?: string;
   severity?: string[]; // ['HIGH','CRITICAL']
@@ -274,8 +277,15 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
       total = totalRes.rows[0]?.c ?? 0;
     }
   } else {
+    // Filtered count is BOUNDED: an exact count over broad filters (e.g.
+    // severity=HIGH,MEDIUM,CRITICAL) scans most of the 74k-row table with
+    // two correlated EXISTS probes per row (~150ms CPU) — crawler-driven
+    // faceted-search combos of exactly that shape triggered D1 CPU-limit
+    // resets (2026-07-08 incident). Capping at SEARCH_COUNT_CAP+1 keeps the
+    // scan bounded; counts below the cap stay exact, above it the UI shows
+    // "1000+" style pagination (40 pages at the default page size).
     const totalRes = await pool.query<{ c: number }>(
-      `${pkgSearchCte} SELECT COUNT(*) AS c ${baseFrom}`,
+      `${pkgSearchCte} SELECT COUNT(*) AS c FROM (SELECT 1 ${baseFrom} LIMIT ${SEARCH_COUNT_CAP + 1})`,
       params,
     );
     total = totalRes.rows[0]?.c ?? 0;
