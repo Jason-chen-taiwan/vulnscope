@@ -291,8 +291,22 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
     total = totalRes.rows[0]?.c ?? 0;
   }
 
+  // Pages beyond the count cap are unreachable via legitimate pagination
+  // (total never exceeds SEARCH_COUNT_CAP for filtered searches) — crawlers
+  // probing deep page= values get an empty result without touching D1.
+  if (offset >= SEARCH_COUNT_CAP) {
+    return { items: [], total };
+  }
+
   // Severity rollup via correlated subqueries: pick the highest scoring
   // CVSS row per CVE (SQLite has no LATERAL).
+  //
+  // ORDER BY intentionally has NO cve_id tiebreak: `published_at DESC,
+  // cve_id DESC` forces a TEMP B-TREE sort of every filter-matching row
+  // (~40ms CPU on broad filters — a D1 CPU-limit bomb, 2026-07-08
+  // incident), while plain `published_at DESC` streams straight off
+  // idx_vuln_published (~10ms). Cost: rows sharing a timestamp have no
+  // stable order across pages — cosmetic for browsing.
   params.push(pageSize);
   params.push(offset);
   const sqlText = `
@@ -307,7 +321,7 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
              ORDER BY base_score DESC LIMIT 1) AS REAL) AS base_score
       FROM vulnerabilities v
       ${whereSql}
-      ORDER BY v.published_at DESC, v.cve_id DESC
+      ORDER BY v.published_at DESC
       LIMIT ? OFFSET ?
   `;
   const res = await pool.query<VulnListItem>(sqlText, params);
