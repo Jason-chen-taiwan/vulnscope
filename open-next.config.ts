@@ -1,6 +1,6 @@
 import { defineCloudflareConfig } from "@opennextjs/cloudflare";
-import kvIncrementalCache from "@opennextjs/cloudflare/overrides/incremental-cache/kv-incremental-cache";
 
-export default defineCloudflareConfig({
-  incrementalCache: kvIncrementalCache,
-});
+// ponytail: KV incrementalCache temporarily disabled — KV bulk PUT gets edge-403'd
+// from this network, blocking every deploy. Re-enable (see git history) once the
+// 403 is resolved; runtime falls back to no-op cache (same as pre-Phase-2).
+export default defineCloudflareConfig();
