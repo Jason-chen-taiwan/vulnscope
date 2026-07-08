@@ -193,21 +193,6 @@ export async function searchVulns(f: SearchFilter): Promise<{ items: VulnListIte
   const page = Math.max(1, f.page ?? 1);
   const offset = (page - 1) * pageSize;
 
-  // TEMPORARY TOURNIQUET (2026-07-08): crawler-crafted facet-only searches
-  // (severity/ecosystem/kev with NO keyword) hit a D1 planner pathology —
-  // ~125M rows read / ~36s per query on the kev variants — monopolizing the
-  // instance until every other query CPU-resets. Short-circuit them without
-  // touching D1 while the index situation on the fresh instance is repaired.
-  // Keyword searches (the primary human path) are unaffected. Remove once
-  // facet queries are verified index-backed on production.
-  const hasKeyword = Boolean(f.q && f.q.trim().length > 0);
-  const hasFacets = Boolean(
-    f.kev === true || (f.severity && f.severity.length > 0) || (f.ecosystem && f.ecosystem.length > 0),
-  );
-  if (hasFacets && !hasKeyword) {
-    return { items: [], total: 0 };
-  }
-
   const where: string[] = [];
   const params: unknown[] = [];
 

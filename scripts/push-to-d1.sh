@@ -156,6 +156,32 @@ SQL
 
   $WRANGLER d1 execute "$D1_DATABASE" --file="$BUILD_FTS_SQL" --remote --yes
   echo "[push-to-d1]   → FTS rebuild complete"
+
+  echo
+  echo "[push-to-d1] [full 4/4] Ensuring plain indexes exist …"
+  # INCIDENT GUARD (2026-07-08): the vulnscope-v2 full import silently landed
+  # WITHOUT any of the dump's CREATE INDEX statements — every query full-scanned
+  # (a single refs lookup read 256k rows; crawler facet queries hit 125M rows /
+  # 36s and monopolized the instance). The dump DOES contain the indexes, so the
+  # loss happens somewhere in the wrangler/D1 import path. Never trust it again:
+  # recreate every index explicitly (IF NOT EXISTS = no-op when import behaved),
+  # then FAIL LOUDLY if the count still disagrees.
+  local ENSURE_IDX_SQL="$WORK_DIR/ensure-indexes.sql"
+  sqlite3 "$SQLITE_FILE" \
+    "SELECT sql || ';' FROM sqlite_master WHERE type='index' AND sql IS NOT NULL" \
+    | sed 's/^CREATE INDEX /CREATE INDEX IF NOT EXISTS /' > "$ENSURE_IDX_SQL"
+  local WANT_IDX
+  WANT_IDX=$(grep -c 'CREATE INDEX' "$ENSURE_IDX_SQL" | tr -d ' ')
+  $WRANGLER d1 execute "$D1_DATABASE" --file="$ENSURE_IDX_SQL" --remote --yes
+  local HAVE_IDX
+  HAVE_IDX=$($WRANGLER d1 execute "$D1_DATABASE" --remote --json \
+    --command="SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND sql IS NOT NULL" \
+    2>/dev/null | grep -oE '"n": [0-9]+' | grep -oE '[0-9]+' | head -1)
+  echo "[push-to-d1]   → indexes: want=$WANT_IDX have=${HAVE_IDX:-?}"
+  if [[ -z "$HAVE_IDX" || "$HAVE_IDX" -lt "$WANT_IDX" ]]; then
+    echo "[push-to-d1] ERROR: index verification failed (want=$WANT_IDX have=${HAVE_IDX:-unknown}) — DB would full-scan everything"
+    return 1
+  fi
 }
 
 # Apply a sentinel-delimited SQL file to D1 in batches of 150 statements,
