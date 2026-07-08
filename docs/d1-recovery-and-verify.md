@@ -90,7 +90,9 @@ npm 成功後，重跑 workflow，`ecosystems` 依序放大：
 2. **建立 stats 表並回填**(增量遷移,不動其他表、不重灌):
    `PUSH_MODE=stats-rebuild bash scripts/push-to-d1.sh vulnscope`
    —— 全部是分片小語句;失敗可安全重跑。
-3. **部署新查詢層**:`pnpm deploy`
+3. **部署新查詢層**:`NEXT_PUBLIC_SITE_URL=https://vulnscope.dev pnpm deploy`
+   (deploy 三坑 —— env URL、version 沒切流量、KV populate 403 —— 詳見
+   docs/phase6-cutover.md Step 3 的 Deploy gotchas。)
    (含 KV incremental cache;需先確認 wrangler.jsonc 的 NEXT_INC_CACHE_KV id 已填。)
    若先部署才跑 stats-rebuild,首頁、套件、insights 頁面會直接噴錯(no such table),不是顯示 0 —— 必須先跑 stats-rebuild 再 deploy。
 4. **驗證**:首頁/zh 首頁秒開;`SELECT * FROM page_stats WHERE id=1` 單列有值;

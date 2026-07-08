@@ -31,8 +31,26 @@ wrangler d1 execute vulnscope --remote --command="SELECT name FROM packages_fts 
 
 ## Step 3 — Deploy the Worker
 ```bash
-pnpm deploy    # opennextjs-cloudflare build && deploy
+NEXT_PUBLIC_SITE_URL=https://<your-domain> pnpm deploy   # opennextjs-cloudflare build && deploy
 ```
+
+> **Deploy gotchas (learned the hard way, 2026-07-08):**
+> 1. **Always pass `NEXT_PUBLIC_SITE_URL`** on the deploy command line. `next build`
+>    reads `.env.local`, which typically carries `http://localhost:3000` for dev —
+>    without the override, production canonical/hreflang metadata silently points
+>    at localhost (SEO poison, invisible unless you view source).
+> 2. **Verify the version actually serves.** `pnpm deploy` may print
+>    `Current Version ID: <id>` but leave it *uploaded, not routed* (output says
+>    "Deployed vulnscope triggers" instead of a routes line). Check with
+>    `wrangler deployments list`; if the latest deployment predates your upload:
+>    `wrangler versions deploy <version-id>@100% -y`
+> 3. **KV populate can 403.** The deploy's populate-cache step bulk-writes to the
+>    `NEXT_INC_CACHE_KV` namespace; some networks get an HTML 403 (Cloudflare edge
+>    challenge, has a Ray ID — not a token problem) which aborts the whole deploy.
+>    Workaround: temporarily disable `incrementalCache` in `open-next.config.ts`
+>    (see git history) or deploy from another network. The KV cache is a
+>    second-layer optimization; the site is fully functional without it.
+
 Note the `*.workers.dev` URL it prints. Smoke test:
 ```bash
 curl -s https://<worker-url>/en/cve/CVE-2021-44228 | grep -i "log4j"   # data renders
