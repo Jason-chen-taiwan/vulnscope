@@ -5,6 +5,8 @@
 > **Package-centric CVE lookup, self-hosted in two commands.** Type a package
 > name and a version, see which CVEs affect it and which upgrade clears them.
 
+**🌐 Live: [vulnscope.dev](https://vulnscope.dev)** — this codebase running on Cloudflare Workers + D1, refreshed daily.
+
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-22%2B-339933)
 ![Postgres](https://img.shields.io/badge/postgres-16%2B-336791)
